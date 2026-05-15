@@ -1,0 +1,17 @@
+[Unit]
+Description=Wildlife Camera System
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/wildlife-cam
+ExecStart=/usr/bin/python3 /home/pi/wildlife-cam/main.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

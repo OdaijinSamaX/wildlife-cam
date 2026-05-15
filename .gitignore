@@ -1,0 +1,15 @@
+# Environment variables
+config/.env
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Recorded videos (temporary storage)
+videos/*
+!videos/.gitkeep
+
+# Logs
+logs/*
+!logs/.gitkeep
