@@ -1,14 +1,25 @@
-# Wildlife Camera System MVP
+# Wildlife Camera System MVP / v0.0.3
 
 Raspberry Pi 5 + HC-SR501 PIR sensor + PiCamera3 による野生動物検知・録画・アップロードシステム。
 
 このリポジトリには、既存の Raspberry Pi 録画コードに加えて、Cloudflare R2、Cloudflare Workers、Supabase/PostgreSQL、Vite + React で構成するクラウド保存・閲覧MVPを含めています。
 
+v0.0.3 では親機子機構成を追加し、Raspberry Pi 5 を親機、Raspberry Pi Zero 2 W を子機として動かせるようにしました。子機が PIR とカメラを担当し、親機は Bluetooth 経由で動画を受け取って既存の Worker / R2 / Supabase 経路へアップロードします。
+
 ## MVP構成
 
 ```
-Raspberry Pi / PC
-  -> Cloudflare Worker API
+Standalone mode
+  Raspberry Pi / PC
+    -> Cloudflare Worker API
+    -> Cloudflare R2 private bucket
+    -> Supabase PostgreSQL videos table
+
+Parent-child mode (v0.0.3)
+  Raspberry Pi Zero 2 W (child)
+    -> Bluetooth relay
+  Raspberry Pi 5 (parent)
+    -> Cloudflare Worker API
   -> Cloudflare R2 private bucket
   -> Supabase PostgreSQL videos table
 React Web UI
@@ -27,7 +38,41 @@ worker/             # Cloudflare Worker API
 web/                # Vite + React Web UI
 supabase/schema.sql # tables, indexes, RLS policies
 pi/upload_video.py  # Pi/PC upload CLI
+link.py            # parent-child relay transport
 ```
+
+## v0.0.3 親機子機モード
+
+実行モードは `WILDLIFE_NODE_ROLE` で切り替えます。
+
+- `standalone`: 従来通り、1台で検知・録画・アップロードまで行う
+- `parent`: Raspberry Pi 5。子機から動画を受信し、既存の WorkerUploader / DriveUploader でクラウドへ送る
+- `child`: Raspberry Pi Zero 2 W。PIR とカメラを担当し、自分で armed 状態を取得して親機へ動画送信を行う
+
+実運用では、役割固定のエントリポイントを使う方が安全です。
+
+- `parent_main.py`: Pi 5 専用。Bluetooth 受信とサーバ送信だけを担当
+- `child_main.py`: Pi Zero 2 W 専用。PIR 検知、録画、Pi 5 への転送だけを担当
+
+主な環境変数:
+
+```env
+WILDLIFE_NODE_ROLE=parent
+WILDLIFE_LINK_TRANSPORT=bluetooth
+WILDLIFE_LINK_PORT=4
+WILDLIFE_LINK_SERVICE_UUID=5e0ec070-4ef1-4f8e-9c12-7b0ac8cb3a11
+```
+
+補足:
+
+- ローカルPC上で親子通信だけ先に試す場合は `WILDLIFE_LINK_TRANSPORT=tcp` を使えます
+- `tcp` の場合、子機側に `WILDLIFE_PARENT_HOST=<親機IP>` が必要です
+- `bluetooth` の `WILDLIFE_LINK_PORT` は RFCOMM チャネルです。`1` から `30` の範囲を使ってください
+- Web UI の armed / disarmed は子機が Worker API から直接取得できます
+- 子機は `get_arm_state` に自分の `trap_id` を含めて親機へ送ります
+- そのため、検知停止の正は引き続きサーバ側です
+
+詳細手順は [docs/v0.0.3-parent-child.md](C:/Users/iwhay/wildlife-cam-main/wildlife-cam-main/docs/v0.0.3-parent-child.md) を参照してください。
 
 ## Supabase セットアップ
 
@@ -155,6 +200,8 @@ export TRAP_ID=YMK-001
 失敗時は `upload_queue/` にJSONが残ります。実運用ではこのキューを定期的に再試行する systemd timer か cron を追加してください。
 
 既存の `main.py` も、`WILDLIFE_API_URL`、`WILDLIFE_DEVICE_TOKEN`、`TRAP_ID` が設定されていれば Worker API へアップロードします。未設定の場合は従来の Google Apps Script アップロードにフォールバックします。
+
+親機子機構成では、`WILDLIFE_API_URL` と `WILDLIFE_DEVICE_TOKEN` を Pi Zero 2 W にも置くと、armed/disarmed の判断を子機自身が行えます。Pi 5 は引き続き受信とサーバ送信だけを担当します。
 
 Pi 側の補足:
 
@@ -298,6 +345,8 @@ armed 制御まわりの実装メモ:
 
 ## セットアップ手順
 
+親機子機構成では、Pi Zero 2 W に `child_main.py`、Pi 5 に `parent_main.py` を配置して別サービスで起動してください。`main.py` は従来の単体運用や互換用途として残しています。
+
 ### 1. Raspberry Piへのデプロイ
 
 ```bash
@@ -380,6 +429,11 @@ sudo systemctl enable wildlife-cam
 sudo systemctl start wildlife-cam
 sudo systemctl status wildlife-cam
 ```
+
+親機子機構成の systemd は次を使います。
+
+- Pi Zero 2 W: [wildlife-cam-child.service](C:/Users/iwhay/wildlife-cam-main/wildlife-cam-main/wildlife-cam-child.service)
+- Pi 5: [wildlife-cam-parent.service](C:/Users/iwhay/wildlife-cam-main/wildlife-cam-main/wildlife-cam-parent.service)
 
 運用上は、Pi の電源 ON/OFF と監視 ON/OFF は別です。
 

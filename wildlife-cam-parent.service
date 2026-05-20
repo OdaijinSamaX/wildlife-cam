@@ -1,0 +1,19 @@
+[Unit]
+Description=Wildlife Camera Parent Node
+After=network.target bluetooth.target
+Wants=network.target bluetooth.target
+
+[Service]
+Type=simple
+User=odaijinsamax
+WorkingDirectory=/home/odaijinsamax/wildlife-cam
+Environment=WILDLIFE_CAM_HOME=/home/odaijinsamax/wildlife-cam
+Environment=WILDLIFE_CAM_ENV_FILE=/home/odaijinsamax/wildlife-cam/config/.env
+ExecStart=/usr/bin/python3 /home/odaijinsamax/wildlife-cam/parent_main.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

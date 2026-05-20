@@ -22,3 +22,7 @@ def get_videos_dir() -> str:
 
 def get_logs_dir() -> str:
     return os.path.join(get_app_home(), "logs")
+
+
+def get_upload_queue_dir() -> str:
+    return os.path.join(get_app_home(), "upload_queue")

@@ -1,4 +1,3 @@
-import os
 from dotenv import load_dotenv
 
 from app_paths import get_env_file
@@ -6,13 +5,12 @@ from app_paths import get_env_file
 load_dotenv(get_env_file())
 
 from logger import get_logger
-from runtime import get_node_role, run_role
+from runtime import run_parent
 
 
 def main():
     log = get_logger("wildlife_cam")
-    role = get_node_role()
-    run_role(role, log)
+    run_parent(log)
 
 
 if __name__ == "__main__":
@@ -20,4 +18,4 @@ if __name__ == "__main__":
         main()
     except KeyboardInterrupt:
         log = get_logger("wildlife_cam")
-        log.info("Shutting down...")
+        log.info("Shutting down parent node...")
