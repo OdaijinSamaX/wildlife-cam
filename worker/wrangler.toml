@@ -1,0 +1,17 @@
+name = "wildlife-cam-api"
+main = "src/index.ts"
+compatibility_date = "2026-05-18"
+
+[[r2_buckets]]
+binding = "VIDEOS_BUCKET"
+bucket_name = "wildlife-cam-videos"
+
+[vars]
+APP_ORIGIN = "https://wildlife-cam-web.pages.dev"
+SUPABASE_URL = "https://qotqqukoqzhyxipkyzgn.supabase.co"
+
+# Set secrets with:
+# wrangler secret put DEVICE_API_KEY
+# wrangler secret put WORKER_SIGNING_SECRET
+# wrangler secret put SUPABASE_SERVICE_ROLE_KEY
+# wrangler secret put SUPABASE_ANON_KEY

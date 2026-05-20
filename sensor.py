@@ -22,12 +22,14 @@ class MotionSensor:
             return False
         return self._sensor.is_active
 
-    def wait_for_sustained_motion(self, duration: float = 1.0) -> bool:
+    def wait_for_sustained_motion(self, duration: float = 1.0, should_continue=None) -> bool:
         if self._stub:
             raise RuntimeError("gpiozero not available - sustained motion detection not supported")
         elapsed = 0.0
         interval = 0.1
         while True:
+            if should_continue is not None and not should_continue():
+                return False
             if self._sensor.is_active:
                 elapsed += interval
                 if elapsed >= duration:

@@ -5,9 +5,10 @@ Wants=network.target
 
 [Service]
 Type=simple
-User=pi
-WorkingDirectory=/home/pi/wildlife-cam
-ExecStart=/usr/bin/python3 /home/pi/wildlife-cam/main.py
+User=odaijinsamax
+WorkingDirectory=/home/odaijinsamax/wildlife-cam
+Environment=WILDLIFE_CAM_HOME=/home/odaijinsamax/wildlife-cam
+ExecStart=/usr/bin/python3 /home/odaijinsamax/wildlife-cam/main.py
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal

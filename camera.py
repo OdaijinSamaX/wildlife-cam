@@ -2,6 +2,7 @@ import datetime
 import logging
 import os
 import time
+from app_paths import get_videos_dir
 
 try:
     from picamera2 import Picamera2
@@ -29,13 +30,15 @@ class WildlifeCamera:
 
     def record_clip(
         self,
-        output_dir: str = "/home/pi/wildlife-cam/videos",
+        output_dir: str | None = None,
         duration: int = 10,
     ) -> str:
         if self._stub:
             self._log.warning("Camera stub - cannot record")
             return ""
 
+        if not output_dir:
+            output_dir = get_videos_dir()
         os.makedirs(output_dir, exist_ok=True)
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"clip_{timestamp}.mp4"

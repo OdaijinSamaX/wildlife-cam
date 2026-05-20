@@ -3,9 +3,11 @@ import logging.handlers
 import os
 from dotenv import load_dotenv
 
-load_dotenv(os.path.join(os.path.dirname(__file__), "config", ".env"))
+from app_paths import get_env_file, get_logs_dir
 
-LOG_DIR = "/home/pi/wildlife-cam/logs"
+load_dotenv(get_env_file())
+
+LOG_DIR = get_logs_dir()
 
 
 def get_logger(name: str) -> logging.Logger:
