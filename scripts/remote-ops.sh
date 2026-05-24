@@ -45,6 +45,14 @@ service_for() {
   esac
 }
 
+sudoers_hint() {
+  echo "Pi 側で sudoers に \`odaijinsamax ALL=(ALL) NOPASSWD: /bin/systemctl, /usr/bin/systemctl\` を追加してください" >&2
+}
+
+journal_hint() {
+  echo "Pi 側で \`sudo usermod -aG systemd-journal odaijinsamax\` を実行するか、sudo NOPASSWD で journalctl を許可してください" >&2
+}
+
 expand_targets() {
   case "${1:-both}" in
     parent) echo "parent" ;;
@@ -58,7 +66,7 @@ run_status() {
   local target
   for target in $(expand_targets "${1:-both}"); do
     echo "== ${target}: $(host_for "$target") / $(service_for "$target") =="
-    ssh "$(host_for "$target")" "sudo systemctl status $(service_for "$target") --no-pager" || true
+    ssh "$(host_for "$target")" "systemctl status $(service_for "$target") --no-pager" || true
   done
 }
 
@@ -70,9 +78,15 @@ run_logs() {
     exit 2
   fi
   if [ "$follow" = "-f" ]; then
-    ssh "$(host_for "$target")" "sudo journalctl -u $(service_for "$target") -f"
+    ssh "$(host_for "$target")" "journalctl -u $(service_for "$target") -f" || {
+      journal_hint
+      exit 1
+    }
   elif [ -z "$follow" ]; then
-    ssh "$(host_for "$target")" "sudo journalctl -u $(service_for "$target") -n 100 --no-pager"
+    ssh "$(host_for "$target")" "journalctl -u $(service_for "$target") -n 100 --no-pager" || {
+      journal_hint
+      exit 1
+    }
   else
     echo "unknown logs option: $follow" >&2
     exit 2
@@ -83,7 +97,10 @@ run_restart() {
   local target
   for target in $(expand_targets "${1:-both}"); do
     echo "== restarting ${target}: $(service_for "$target") =="
-    ssh "$(host_for "$target")" "sudo systemctl restart $(service_for "$target")"
+    ssh "$(host_for "$target")" "sudo -n systemctl restart $(service_for "$target")" || {
+      sudoers_hint
+      exit 1
+    }
   done
 }
 
@@ -93,7 +110,10 @@ run_deploy() {
     echo "== deploying ${target}: $(host_for "$target") =="
     "$ROOT_DIR/deploy.sh" "$(host_for "$target")"
     echo "== restarting ${target}: $(service_for "$target") =="
-    ssh "$(host_for "$target")" "sudo systemctl restart $(service_for "$target")"
+    ssh "$(host_for "$target")" "sudo -n systemctl restart $(service_for "$target")" || {
+      sudoers_hint
+      exit 1
+    }
   done
 }
 
