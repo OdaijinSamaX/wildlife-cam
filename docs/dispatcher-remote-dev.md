@@ -22,6 +22,18 @@ Pi には Claude / Codex 本体を入れません。特に Pi Zero 2 W は 512MB
 
 ログインは 1Password SSH agent forwarding が使える前提です。鍵の配布や `ssh-copy-id` 相当の作業は、この repo の deploy 手順には含めません。
 
+## sudoers
+
+`scripts/remote-ops.sh status` は sudo なしで実行します。`scripts/remote-ops.sh logs` も、Pi 側の user が `systemd-journal` グループに入っていれば sudo なしで読めます。
+
+`scripts/remote-ops.sh restart` と `deploy` 後の service restart には、Pi 側で NOPASSWD sudoers が必要です。推奨設定例:
+
+```text
+odaijinsamax ALL=(ALL) NOPASSWD: /bin/systemctl, /usr/bin/systemctl, /bin/journalctl, /usr/bin/journalctl
+```
+
+設定は Pi 側で `sudo visudo` から追加します。Pi5 親機側にはすでに何らかの NOPASSWD 設定が入っている様子で、確認は `sudo -ln` でできます。Pi Zero 2 W 子機側は要設定です。本番運用時に logs だけ読めればよい場合は、`sudo usermod -aG systemd-journal odaijinsamax` でも `journalctl` は読めるようになります。
+
 ## 典型ワークフロー
 
 母艦の repo で編集し、対象 Pi へ配布して service を再起動し、journal を確認します。

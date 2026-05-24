@@ -201,13 +201,16 @@
 - Pi (`odaijinsamax@192.168.68.65`) に SSH し、`main.py` / `uploader.py` / `sensor.py` を更新した
 - `wildlife-cam.service` を再起動し、armed 制御のログまで確認した
 
-## v0.0.3 親子機構成の実機テスト状況
+## v0.0.3.1 親子機構成の実機テスト状況
 
-未テスト。実機での疎通確認は v0.0.3.1 で対応予定。
+2026-05-24 の smoke test で、母艦から両 Pi への SSH 疎通と Bluetooth paired device 数を確認した。親機サービス起動時の log で `Parent link server listening on tcp://0.0.0.0:8765` を確認しており、現状は `WILDLIFE_LINK_TRANSPORT=tcp` で稼働中。Bluetooth 経路の end-to-end はまだ未検証。
 
+- [x] 母艦 → Pi5 親機への SSH 疎通 (wildlife-parent alias, 1Password agent 経由)
+- [x] 母艦 → Pi Zero 2 W 子機への SSH 疎通 (wildlife-child alias)
+- [x] Pi5 親機 wildlife-cam-parent.service が active (running) で起動済み
 - [ ] Pi5 親機での `parent_main.py` 起動確認
 - [ ] Pi Zero 2 W 子機での `child_main.py` 起動確認
-- [ ] Bluetooth ペアリング (RFCOMM channel 4) 確立
+- [x] Bluetooth ペアリング (Pi5 と Pi Zero 互いに paired devices=1)
 - [ ] PIR検知 → 録画 → 子機→親機 file transfer → Worker upload の end-to-end 疎通
 - [ ] tcp 経路 (`WILDLIFE_LINK_TRANSPORT=tcp`) でのローカル検証
 - [ ] 親機 ↔ 子機 link 切断時のリトライ・残置ファイル挙動
