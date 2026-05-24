@@ -200,3 +200,14 @@
 - Web を複数回本番デプロイした
 - Pi (`odaijinsamax@192.168.68.65`) に SSH し、`main.py` / `uploader.py` / `sensor.py` を更新した
 - `wildlife-cam.service` を再起動し、armed 制御のログまで確認した
+
+## v0.0.3 親子機構成の実機テスト状況
+
+未テスト。実機での疎通確認は v0.0.3.1 で対応予定。
+
+- [ ] Pi5 親機での `parent_main.py` 起動確認
+- [ ] Pi Zero 2 W 子機での `child_main.py` 起動確認
+- [ ] Bluetooth ペアリング (RFCOMM channel 4) 確立
+- [ ] PIR検知 → 録画 → 子機→親機 file transfer → Worker upload の end-to-end 疎通
+- [ ] tcp 経路 (`WILDLIFE_LINK_TRANSPORT=tcp`) でのローカル検証
+- [ ] 親機 ↔ 子機 link 切断時のリトライ・残置ファイル挙動
