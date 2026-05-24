@@ -72,7 +72,7 @@ WILDLIFE_LINK_SERVICE_UUID=5e0ec070-4ef1-4f8e-9c12-7b0ac8cb3a11
 - 子機は `get_arm_state` に自分の `trap_id` を含めて親機へ送ります
 - そのため、検知停止の正は引き続きサーバ側です
 
-詳細手順は [docs/v0.0.3-parent-child.md](C:/Users/iwhay/wildlife-cam-main/wildlife-cam-main/docs/v0.0.3-parent-child.md) を参照してください。
+詳細手順は [docs/v0.0.3-parent-child.md](docs/v0.0.3-parent-child.md) を参照してください。
 
 ## Supabase セットアップ
 
@@ -432,8 +432,8 @@ sudo systemctl status wildlife-cam
 
 親機子機構成の systemd は次を使います。
 
-- Pi Zero 2 W: [wildlife-cam-child.service](C:/Users/iwhay/wildlife-cam-main/wildlife-cam-main/wildlife-cam-child.service)
-- Pi 5: [wildlife-cam-parent.service](C:/Users/iwhay/wildlife-cam-main/wildlife-cam-main/wildlife-cam-parent.service)
+- Pi Zero 2 W: [wildlife-cam-child.service](wildlife-cam-child.service)
+- Pi 5: [wildlife-cam-parent.service](wildlife-cam-parent.service)
 
 運用上は、Pi の電源 ON/OFF と監視 ON/OFF は別です。
 
