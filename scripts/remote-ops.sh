@@ -7,6 +7,7 @@ PARENT_ALIAS="wildlife-parent"
 CHILD_ALIAS="wildlife-child"
 PARENT_SERVICE="wildlife-cam-parent"
 CHILD_SERVICE="wildlife-cam-child"
+SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=5)
 
 usage() {
   cat <<'USAGE'
@@ -53,6 +54,31 @@ journal_hint() {
   echo "Pi 側で \`sudo usermod -aG systemd-journal odaijinsamax\` を実行するか、sudo NOPASSWD で journalctl を許可してください" >&2
 }
 
+ssh_unreachable() {
+  local target="$1"
+  local detail="${2:-}"
+  if [ -n "$detail" ]; then
+    echo "${target} [ssh-unreachable] host=$(host_for "$target") detail=${detail}" >&2
+  else
+    echo "${target} [ssh-unreachable] host=$(host_for "$target")" >&2
+  fi
+}
+
+ssh_run() {
+  local target="$1"
+  shift
+  ssh "${SSH_OPTS[@]}" "$(host_for "$target")" "$@"
+}
+
+ensure_ssh() {
+  local target="$1"
+  local output
+  if ! output="$(ssh_run "$target" "true" 2>&1)"; then
+    ssh_unreachable "$target" "$(printf '%s' "$output" | head -n 1)"
+    return 1
+  fi
+}
+
 expand_targets() {
   case "${1:-both}" in
     parent) echo "parent" ;;
@@ -64,9 +90,32 @@ expand_targets() {
 
 run_status() {
   local target
+  local service
+  local output
+  local load_state
+  local active_state
   for target in $(expand_targets "${1:-both}"); do
-    echo "== ${target}: $(host_for "$target") / $(service_for "$target") =="
-    ssh "$(host_for "$target")" "systemctl status $(service_for "$target") --no-pager" || true
+    service="$(service_for "$target")"
+    if ! ensure_ssh "$target"; then
+      continue
+    fi
+    if ! output="$(ssh_run "$target" "systemctl show --property=LoadState --property=ActiveState --value ${service}" 2>&1)"; then
+      echo "${target} [unit-missing] host=$(host_for "$target") service=${service} detail=$(printf '%s' "$output" | head -n 1)"
+      continue
+    fi
+
+    load_state="$(printf '%s\n' "$output" | sed -n '1p')"
+    active_state="$(printf '%s\n' "$output" | sed -n '2p')"
+
+    if [ "$load_state" = "not-found" ]; then
+      echo "${target} [unit-missing] host=$(host_for "$target") service=${service}"
+    elif [ "$active_state" = "active" ]; then
+      echo "${target} [active] host=$(host_for "$target") service=${service}"
+    elif [ -n "$active_state" ]; then
+      echo "${target} [inactive] host=$(host_for "$target") service=${service} active_state=${active_state}"
+    else
+      echo "${target} [unit-missing] host=$(host_for "$target") service=${service} load_state=${load_state:-unknown}"
+    fi
   done
 }
 
@@ -77,13 +126,14 @@ run_logs() {
     echo "logs requires parent or child" >&2
     exit 2
   fi
+  ensure_ssh "$target" || exit 1
   if [ "$follow" = "-f" ]; then
-    ssh "$(host_for "$target")" "journalctl -u $(service_for "$target") -f" || {
+    ssh_run "$target" "journalctl -u $(service_for "$target") -f" || {
       journal_hint
       exit 1
     }
   elif [ -z "$follow" ]; then
-    ssh "$(host_for "$target")" "journalctl -u $(service_for "$target") -n 100 --no-pager" || {
+    ssh_run "$target" "journalctl -u $(service_for "$target") -n 100 --no-pager" || {
       journal_hint
       exit 1
     }
@@ -97,7 +147,8 @@ run_restart() {
   local target
   for target in $(expand_targets "${1:-both}"); do
     echo "== restarting ${target}: $(service_for "$target") =="
-    ssh "$(host_for "$target")" "sudo -n systemctl restart $(service_for "$target")" || {
+    ensure_ssh "$target" || exit 1
+    ssh_run "$target" "sudo -n systemctl restart $(service_for "$target")" || {
       sudoers_hint
       exit 1
     }
@@ -110,7 +161,8 @@ run_deploy() {
     echo "== deploying ${target}: $(host_for "$target") =="
     "$ROOT_DIR/deploy.sh" "$(host_for "$target")"
     echo "== restarting ${target}: $(service_for "$target") =="
-    ssh "$(host_for "$target")" "sudo -n systemctl restart $(service_for "$target")" || {
+    ensure_ssh "$target" || exit 1
+    ssh_run "$target" "sudo -n systemctl restart $(service_for "$target")" || {
       sudoers_hint
       exit 1
     }
@@ -120,8 +172,11 @@ run_deploy() {
 run_ping() {
   local target
   for target in parent child; do
+    if ! ensure_ssh "$target"; then
+      continue
+    fi
     printf "%s " "$target"
-    ssh "$(host_for "$target")" '
+    ssh_run "$target" '
       hostname_value=$(hostname)
       if command -v bluetoothctl >/dev/null 2>&1; then
         paired_count=$(bluetoothctl devices Paired 2>/dev/null | sed "/^$/d" | wc -l)

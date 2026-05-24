@@ -58,6 +58,13 @@ scripts/remote-ops.sh logs child -f
 scripts/remote-ops.sh ping
 ```
 
+`scripts/remote-ops.sh status both` は 1 行/Pi の集計表示です。
+
+- `[ssh-unreachable]`: SSH 認証失敗、timeout、host unreachable などで対象 Pi に入れない
+- `[active]`: SSH OK かつ対象 service が `active`
+- `[inactive]`: SSH OK かつ unit は存在するが `active` ではない
+- `[unit-missing]`: SSH OK だが対象 unit が未インストール、または `systemctl` で unit 状態を取得できない
+
 本番動作中の Pi Zero 2 W は、基本的に SSH で触らずログ確認や再起動を最小限にします。子機は PIR 検知、録画、Bluetooth file transfer を担当し、余計な常駐プロセスを増やさない方針です。
 
 ## v0.0.3.1 実機テスト TODO の消化手順
