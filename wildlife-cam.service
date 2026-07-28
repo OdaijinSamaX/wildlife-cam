@@ -1,7 +1,10 @@
 [Unit]
 Description=Wildlife Camera System
-After=network.target
-Wants=network.target
+# network.target は「設定を始めた」時点で満たされるため、LTE が繋がる前に
+# アプリが起動してしまう。実際に経路が立つのを待つ。
+After=network-online.target NetworkManager.service ModemManager.service
+Wants=network-online.target
+# 通信が無くてもアプリ側は保留して待てるので、依存は Wants に留める。
 
 [Service]
 Type=simple
@@ -9,8 +12,15 @@ User=odaijinsamax
 WorkingDirectory=/home/odaijinsamax/wildlife-cam
 Environment=WILDLIFE_CAM_HOME=/home/odaijinsamax/wildlife-cam
 ExecStart=/usr/bin/python3 /home/odaijinsamax/wildlife-cam/main.py
-Restart=on-failure
-RestartSec=5
+
+# 無人運用では理由を問わず復帰させる。on-failure だと正常終了(exit 0)で
+# 止まったままになる。
+Restart=always
+RestartSec=10
+# 連続再起動で systemd に見捨てられると罠が沈黙する。現地では誰も直せない
+# ので、レート制限そのものを外す。
+StartLimitIntervalSec=0
+
 StandardOutput=journal
 StandardError=journal
 
