@@ -148,13 +148,19 @@ async function handleTrapState(request: Request, env: Env, trapId: string): Prom
   requireDeviceToken(request, env);
 
   const trap = await getTrap(env, trapId);
-  await upsertTrapHeartbeat(env, trapId, trap?.is_armed ?? true);
+  // 未登録の罠は自動登録するが、既定は「未稼働」にする。
+  // 従来は true(稼働中)で登録していたため、trap_id を打ち間違えると
+  // 幽霊の罠が稼働状態で生まれ、そのまま撮影・送信が通ってしまい、
+  // 設定ミスに気づけなかった。設計思想の「既定=保留」に合わせる。
+  // 新規の罠を現地投入するときは、Supabase 側で is_armed を true にすること。
+  const isArmed = trap?.is_armed ?? false;
+  await upsertTrapHeartbeat(env, trapId, isArmed);
   const now = new Date().toISOString();
 
   return json(
     {
       trap_id: trapId,
-      is_armed: trap?.is_armed ?? true,
+      is_armed: isArmed,
       name: trap?.name ?? null,
       updated_at: trap?.updated_at ?? new Date().toISOString(),
       last_seen_at: now,
@@ -293,7 +299,13 @@ function requireDeviceToken(request: Request, env: Env): void {
 
 async function requireTrapArmed(env: Env, trapId: string): Promise<void> {
   const trap = await getTrap(env, trapId);
-  if (trap && !trap.is_armed) {
+  // trap が null のとき従来は条件全体が false になり、存在しない trap_id に
+  // アップロードURLを発行していた。trap_id の打ち間違いが成功したように見え、
+  // どこにも紐づかない孤児データが生まれる。存在しなければ明確に拒否する。
+  if (!trap) {
+    throw new HttpError(404, "trap_not_found");
+  }
+  if (!trap.is_armed) {
     throw new HttpError(409, "trap_disarmed");
   }
 }

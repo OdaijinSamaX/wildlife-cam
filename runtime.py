@@ -32,14 +32,127 @@ def get_node_role() -> str:
     return role or "standalone"
 
 
+def _captured_at_from_path(file_path: str) -> str:
+    """clip_YYYYMMDD_HHMMSS.mp4 から撮影時刻を復元する。
+
+    取り残されたクリップを後から送るとき、送信時刻ではなく撮影時刻を
+    記録しないと、夜間に撮れたものが翌朝の記録になってしまう。
+    命名規則から読めなければファイルの更新時刻で代替する。
+    """
+    name = os.path.basename(file_path)
+    stem = os.path.splitext(name)[0]
+    parts = stem.split("_")
+    if len(parts) >= 3:
+        try:
+            dt = datetime.strptime(f"{parts[-2]}_{parts[-1]}", "%Y%m%d_%H%M%S")
+            return dt.astimezone().isoformat()
+        except ValueError:
+            pass
+    return datetime.fromtimestamp(os.path.getmtime(file_path)).astimezone().isoformat()
+
+
+def drain_pending_clips(log, uploader, *, skip_newer_than: float = 60.0, limit: int = 5) -> int:
+    """videos/ に取り残されたクリップを送信して回収する。
+
+    強制終了・電源断・送信失敗で残ったファイルは、これまで誰も拾わなかった。
+    起動時とループ先頭で呼ぶことで、撮り逃しを防ぐ。
+
+    skip_newer_than: 直近に更新されたファイルは録画中の可能性があるため触らない。
+    limit: 1回の呼び出しで送る上限。溜まっていてもモーション検知を長時間止めない。
+    """
+    videos_dir = get_videos_dir()
+    if not os.path.isdir(videos_dir):
+        return 0
+
+    now = time.time()
+    pending = []
+    for name in os.listdir(videos_dir):
+        if not name.endswith(".mp4"):
+            continue
+        path = os.path.join(videos_dir, name)
+        try:
+            stat = os.stat(path)
+        except OSError:
+            continue
+        if stat.st_size == 0:
+            # 録画が中断された残骸。送っても意味がないので捨てる。
+            log.warning("Removing zero-byte clip: %s", path)
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+            continue
+        if now - stat.st_mtime < skip_newer_than:
+            continue
+        pending.append((stat.st_mtime, path))
+
+    if not pending:
+        return 0
+
+    pending.sort()
+    log.info("Found %d pending clip(s) to retry", len(pending))
+
+    sent = 0
+    for _, path in pending[:limit]:
+        try:
+            ok = uploader.upload(path, captured_at=_captured_at_from_path(path))
+        except Exception as exc:
+            log.warning("Retry upload raised for %s: %s", path, exc)
+            continue
+        if ok:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+            log.info("Retry upload OK, local file deleted: %s", path)
+            sent += 1
+        else:
+            log.warning("Retry upload still failing, keeping: %s", path)
+            # 1件失敗したら通信側の問題とみなし、残りは次回に回す。
+            break
+
+    remaining = len(pending) - sent
+    if remaining > 0:
+        log.info("%d clip(s) still pending", remaining)
+    return sent
+
+
 def run_standalone(log):
     motion_sensor = MotionSensor()
     camera = WildlifeCamera()
     uploader = create_uploader(log)
     was_armed = None
 
+    # 安全思想「通信断=保留(作動しない)」は WorkerUploader 経路でしか成立しない。
+    # 設定不備で DriveUploader に落ちると arm ゲートが消え、無条件に撮影し続ける。
+    # 静かに安全機構を失うより、起動時に気づける形にする。
+    if not isinstance(uploader, WorkerUploader):
+        log.warning(
+            "Uploader is %s, not WorkerUploader -- the arm gate and "
+            "comms-loss hold are NOT active. Check WILDLIFE_API_URL / "
+            "WILDLIFE_DEVICE_TOKEN / TRAP_ID in config/.env",
+            type(uploader).__name__,
+        )
+        if os.getenv("WILDLIFE_REQUIRE_ARM_GATE", "1").strip() != "0":
+            raise RuntimeError(
+                "Arm gate unavailable (uploader is not WorkerUploader). "
+                "Fix config/.env, or set WILDLIFE_REQUIRE_ARM_GATE=0 to run without it."
+            )
+
+    # 前回の稼働で取り残されたクリップを先に回収する。
+    # 電源断や強制終了で残ったファイルは、これまで永久に放置されていた。
+    try:
+        drain_pending_clips(log, uploader, skip_newer_than=0.0)
+    except Exception:
+        log.exception("Startup drain failed - continuing anyway")
+
     try:
         while True:
+            try:
+                drain_pending_clips(log, uploader)
+            except Exception:
+                log.exception("Pending clip drain failed - continuing anyway")
+
             if isinstance(uploader, WorkerUploader):
                 try:
                     is_armed = uploader.is_armed()
@@ -58,9 +171,21 @@ def run_standalone(log):
                     time.sleep(5)
                     continue
 
+                # PIR待機中も定期的に arm 状態を問い合わせるが、その最中に
+                # LTE が切れると requests の例外がここまで素通りし、
+                # main.py は KeyboardInterrupt しか捕まえないためプロセスが落ちる。
+                # 屋久島では通信断が常態なので、例外は待機の中断として扱い、
+                # ループ先頭の通信断ハンドリング(=保留)に戻す。
+                def _armed_or_pause() -> bool:
+                    try:
+                        return uploader.is_armed()
+                    except Exception as exc:
+                        log.warning("Arm check failed while waiting for motion: %s", exc)
+                        return False
+
                 motion_detected = motion_sensor.wait_for_sustained_motion(
                     1.0,
-                    should_continue=uploader.is_armed,
+                    should_continue=_armed_or_pause,
                 )
                 if not motion_detected:
                     if was_armed is not False:
@@ -89,10 +214,10 @@ def run_standalone(log):
             time.sleep(0.5)
     finally:
         try:
-            camera._camera.close()
+            camera.close()
             log.info("Camera closed")
         except Exception:
-            pass
+            log.exception("Camera close failed")
 
 
 def run_child(log):
