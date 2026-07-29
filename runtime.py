@@ -4,6 +4,7 @@ from datetime import datetime
 
 from app_paths import get_videos_dir
 from camera import WildlifeCamera
+from illuminator import Illuminator
 from link import ChildLinkClient, ParentLinkServer, apply_timestamp
 from sensor import MotionSensor
 from uploader import DriveUploader, WorkerUploader
@@ -120,6 +121,7 @@ def drain_pending_clips(log, uploader, *, skip_newer_than: float = 60.0, limit: 
 def run_standalone(log):
     motion_sensor = MotionSensor()
     camera = WildlifeCamera()
+    illuminator = Illuminator()
     uploader = create_uploader(log)
     was_armed = None
 
@@ -197,7 +199,10 @@ def run_standalone(log):
 
             log.info("Motion detected -- starting recording")
 
-            file_path = camera.record_clip(get_videos_dir(), 10)
+            # 夜間は IR 投光器を点けたまま録画する。投光器側の光量センサーが
+            # 明るい場所では点灯を抑えるので、昼夜の判定はソフトに持たない。
+            with illuminator.lit():
+                file_path = camera.record_clip(get_videos_dir(), 10)
             if not file_path:
                 log.warning("Recording returned no file path")
                 time.sleep(1)
@@ -214,6 +219,10 @@ def run_standalone(log):
             time.sleep(0.5)
     finally:
         try:
+            illuminator.close()
+        except Exception:
+            log.exception("Illuminator close failed")
+        try:
             camera.close()
             log.info("Camera closed")
         except Exception:
@@ -227,6 +236,7 @@ def run_child(log):
 
     motion_sensor = MotionSensor()
     camera = WildlifeCamera()
+    illuminator = Illuminator()
     link_client = ChildLinkClient(trap_id=trap_id)
     arm_state_client = create_uploader(log)
     was_armed = None
@@ -269,7 +279,8 @@ def run_child(log):
                 continue
 
             log.info("Motion detected on child node -- starting recording")
-            file_path = camera.record_clip(get_videos_dir(), 10)
+            with illuminator.lit():
+                file_path = camera.record_clip(get_videos_dir(), 10)
             if not file_path:
                 log.warning("Recording returned no file path")
                 time.sleep(1)
@@ -291,10 +302,14 @@ def run_child(log):
             time.sleep(0.5)
     finally:
         try:
-            camera._camera.close()
+            illuminator.close()
+        except Exception:
+            log.exception("Illuminator close failed")
+        try:
+            camera.close()
             log.info("Camera closed")
         except Exception:
-            pass
+            log.exception("Camera close failed")
 
 
 def run_parent(log):
