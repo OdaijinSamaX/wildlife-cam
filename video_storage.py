@@ -40,12 +40,23 @@ def _remove_clip(log, path: Path, reason: str) -> None:
 
 
 def enforce_limits(log, videos_dir: str) -> bool:
-    """Delete oldest clips until age/count/bytes/free-space limits are met."""
+    """Delete oldest clips until age/count/bytes/free-space limits are met.
+
+    優先順位（送信予算導入に伴う既定値の見直し）:
+      撮影を絞らない方針にしたので SD へ貯まる速度が上がり(最大 ~5GB/夜)、かつ送信予算切れで
+      「送信待ちの動画」が SD に長く残る。旧既定の 20GiB/2,000本 は 104GB の SD に対して過度に
+      保守的で、送信待ちの動画を黙って削りかねなかった。そこで:
+        - 総バイト上限(WILDLIFE_VIDEO_MAX_BYTES) と 本数上限(WILDLIFE_VIDEO_MAX_FILES) は既定で無効(0)。
+        - SD 保護は「空き最低 2GiB(WILDLIFE_MIN_FREE_BYTES)」と「保存 14 日(WILDLIFE_VIDEO_MAX_AGE_DAYS)」で行う。
+      これにより通常運用(数日の現地滞在→現地回収)では送信待ちの動画は消えない。
+      SD が本当に逼迫したときだけ、端末保護(録画継続)を優先して古い順に削除する。
+      削除は必ずログに残す（黙って消さない）。必要ならバイト/本数上限を env で復活できる。
+    """
     root = Path(videos_dir)
     root.mkdir(parents=True, exist_ok=True)
     quarantine_dir(videos_dir).mkdir(parents=True, exist_ok=True)
-    max_bytes = _env_int("WILDLIFE_VIDEO_MAX_BYTES", 20 * GIB)
-    max_files = _env_int("WILDLIFE_VIDEO_MAX_FILES", 2000)
+    max_bytes = _env_int("WILDLIFE_VIDEO_MAX_BYTES", 0)
+    max_files = _env_int("WILDLIFE_VIDEO_MAX_FILES", 0)
     max_age_days = _env_int("WILDLIFE_VIDEO_MAX_AGE_DAYS", 14)
     min_free = _env_int("WILDLIFE_MIN_FREE_BYTES", 2 * GIB)
     now = time.time()

@@ -29,6 +29,11 @@ echo "[deploy] Connecting to ${SSH_TARGET}..."
 echo "[deploy] Creating remote directories..."
 ssh "${SSH_TARGET}" "mkdir -p ${REMOTE_DIR}/{videos,logs,config,gas}"
 
+echo "[deploy] Ensuring persistent state dir /var/lib/wildlife-cam..."
+# 送信予算カウンタ等の永続状態を再起動をまたいで残す。書けなければ ~/wildlife-cam/state に退避する。
+ssh "${SSH_TARGET}" "sudo install -d -o ${PI_USER} -g ${PI_USER} /var/lib/wildlife-cam" \
+  || echo "[deploy] /var/lib/wildlife-cam を作れませんでした。app_home/state に退避します(非致命)"
+
 echo "[deploy] Copying files..."
 rsync -avz --exclude="*.pyc" --exclude="__pycache__" --exclude=".env" \
   --exclude="videos/" --exclude="logs/" \

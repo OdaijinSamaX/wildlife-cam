@@ -1,5 +1,13 @@
 # Changelog
 
+## field-resilience: upload budget - 2026-08-07
+
+- LTE 従量課金対策として **1 時間あたりの送信量に上限**（`WILDLIFE_UPLOAD_BUDGET_MB_PER_HOUR`、既定 250MB、ローリング窓、LTE のときだけ）を設けた。超過時は**送信のみ停止し録画は SD に継続**、予算回復後に自動再開する。カウンタは永続化し再起動をまたいで保持する。
+- バックログが閾値（`WILDLIFE_UPLOAD_NEWEST_FIRST_BACKLOG`、既定 10 本）を超えたら**新しい順**に送るようにし、実演で「いま撮れた最新の動画」が古い山に埋もれないようにした。
+- 撮影クールダウン（`WILDLIFE_MOTION_COOLDOWN_SEC`、既定 0）と誤検知サーキットブレーカー（`WILDLIFE_BURST_PAUSE_ENABLED`、既定 OFF）は撮り逃し防止のため既定で無効。予備として実装のみ残す。
+- 送信待ちの動画が保存上限で黙って消える事故を避けるため、`video_storage.py` のバイト/本数上限を既定無効化し、SD 保護は空き最低 2GiB と保存 14 日で行うように既定値を見直した（削除時は必ずログ）。
+- `scripts/field-status.sh` に送信量/上限・送信保留の本数と再開予定・直近1時間の録画本数・SD 残り持続目安を日本語で追加した。運用ドキュメント `docs/upload-budget.md` を追加、現地手順書に「送信保留中」の意味を追記した。
+
 ## network-failover-hardening - 2026-08-07
 
 - LTE 単独時に DNS が 1 つも設定されず名前解決が全滅していた 2026-08-06 の障害を修復した（`lte-his` の `ipv4/ipv6.ignore-auto-dns` を `no` に戻し、保険として公開 DNS を併記）。

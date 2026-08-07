@@ -8,6 +8,7 @@ from camera import WildlifeCamera
 from illuminator import Illuminator
 from link import ChildLinkClient, ParentLinkServer, apply_timestamp
 from sensor import MotionSensor
+from field_limits import FieldLimiter, on_lte
 from uploader import DriveUploader, WorkerUploader
 from video_storage import (
     clear_retry,
@@ -60,19 +61,37 @@ def _captured_at_from_path(file_path: str) -> str:
     return datetime.fromtimestamp(os.path.getmtime(file_path)).astimezone().isoformat()
 
 
-def drain_pending_clips(log, uploader, *, skip_newer_than: float = 60.0, limit: int = 5) -> int:
+def drain_pending_clips(
+    log,
+    uploader,
+    *,
+    skip_newer_than: float = 60.0,
+    limit: int = 5,
+    limiter: FieldLimiter | None = None,
+    is_lte: bool = False,
+) -> int:
     """videos/ に取り残されたクリップを送信して回収する。
 
-    強制終了・電源断・送信失敗で残ったファイルは、これまで誰も拾わなかった。
+    強制終了・電源断・送信失敗・送信予算切れで残ったファイルは、これまで誰も拾わなかった。
     起動時とループ先頭で呼ぶことで、撮り逃しを防ぐ。
 
     skip_newer_than: 直近に更新されたファイルは録画中の可能性があるため触らない。
     limit: 1回の呼び出しで送る上限。溜まっていてもモーション検知を長時間止めない。
+    limiter/is_lte: LTE 送信予算のゲートと送信量カウントに使う。
+
+    送信順序: 通常はバックログ解消のため古い順。ただしバックログが閾値を超えたら
+    「新しい順」に切り替える。予算上限でバックログが膨らんだとき、実演で見せたい
+    「いま撮れた最新の動画」が古い山の後ろに埋もれないようにするため（設計判断は docs 参照）。
     """
     videos_dir = get_videos_dir()
     if not os.path.isdir(videos_dir):
         return 0
 
+    # 保留中クリップの保護と SD 保護の優先順位:
+    #   enforce_limits は SD を守るため古い順に削除しうる。送信予算で保留中の動画も
+    #   対象になりうるが、予算は最長でも約1時間の遅延にすぎず、既定の保存期間(14日)を
+    #   はるかに下回るので通常は消えない。SD が本当に逼迫した場合のみ、端末保護(録画継続)を
+    #   優先して古い順に削除する（削除は必ずログに残る。黙って消さない）。
     enforce_limits(log, videos_dir)
 
     now = time.time()
@@ -106,17 +125,31 @@ def drain_pending_clips(log, uploader, *, skip_newer_than: float = 60.0, limit: 
     if not pending:
         return 0
 
-    pending.sort()
-    log.info("Found %d pending clip(s) to retry", len(pending))
+    pending.sort()  # 既定は古い順
+    if limiter is not None and limiter.prefer_newest_first(len(pending)):
+        pending.reverse()  # バックログ過多時は新しい順
+        log.info("Backlog %d clip(s) -- draining newest-first", len(pending))
+    else:
+        log.info("Found %d pending clip(s) to retry", len(pending))
 
     sent = 0
     for _, path in pending[:limit]:
+        # 送信予算切れ(LTE時)ならこの回は送らず SD に残す。失敗としては数えない。
+        if limiter is not None and limiter.upload_blocked_by_budget(is_lte):
+            limiter.note_budget_log()
+            break
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            size = 0
         try:
             ok = uploader.upload(path, captured_at=_captured_at_from_path(path))
         except Exception as exc:
             log.warning("Retry upload raised for %s: %s", path, exc)
             ok = False
         if ok:
+            if limiter is not None:
+                limiter.note_uploaded(size, is_lte)
             try:
                 os.remove(path)
             except OSError:
@@ -156,6 +189,7 @@ def run_standalone(log):
     illuminator = Illuminator()
     uploader = create_uploader(log)
     was_armed = None
+    limiter = FieldLimiter(log)
     enforce_limits(log, get_videos_dir())
 
     # 安全思想「通信断=保留(作動しない)」は WorkerUploader 経路でしか成立しない。
@@ -177,15 +211,17 @@ def run_standalone(log):
     # 前回の稼働で取り残されたクリップを先に回収する。
     # 電源断や強制終了で残ったファイルは、これまで永久に放置されていた。
     try:
-        drain_pending_clips(log, uploader, skip_newer_than=0.0)
+        drain_pending_clips(log, uploader, skip_newer_than=0.0, limiter=limiter, is_lte=on_lte())
     except Exception:
         log.exception("Startup drain failed - continuing anyway")
 
     try:
         while True:
             mark_progress()
+            limiter.maybe_resume_breaker()
+            lte = on_lte()
             try:
-                drain_pending_clips(log, uploader)
+                drain_pending_clips(log, uploader, limiter=limiter, is_lte=lte)
             except Exception:
                 log.exception("Pending clip drain failed - continuing anyway")
 
@@ -200,11 +236,13 @@ def run_standalone(log):
                         was_armed = is_armed
 
                     if not is_armed:
+                        limiter.write_status("disarmed", lte)
                         mark_progress()
                         time.sleep(5)
                         continue
                 except Exception as exc:
                     log.warning("Failed to fetch trap arm state: %s", exc)
+                    limiter.write_status("comms_loss", lte)
                     mark_progress()
                     time.sleep(5)
                     continue
@@ -222,6 +260,7 @@ def run_standalone(log):
                         log.warning("Arm check failed while waiting for motion: %s", exc)
                         return False
 
+                limiter.write_status("armed_idle", lte)
                 motion_detected = motion_sensor.wait_for_sustained_motion(
                     1.0,
                     should_continue=_armed_or_pause,
@@ -233,6 +272,15 @@ def run_standalone(log):
                     continue
             else:
                 motion_sensor.wait_for_sustained_motion(1.0)
+
+            # 撮影ゲート(既定では無効。クールダウン>0 かブレーカー有効時のみ効く)。
+            # 既定方針は「撮影を絞らない」なので通常はここを素通りする。
+            block = limiter.record_block_reason()
+            if block is not None:
+                limiter.note_skip(block)
+                limiter.write_status(block, lte)
+                time.sleep(2)
+                continue
 
             log.info("Motion detected -- starting recording")
 
@@ -250,11 +298,27 @@ def run_standalone(log):
                 time.sleep(1)
                 continue
             log.info("Recording complete: %s", file_path)
+            limiter.note_recording()
             mark_progress()
 
+            # LTE 送信予算を超えていたら、この新しい1本も送らず SD に残す。
+            # 録画は止めない。予算回復後、drain 側が(バックログ過多なら新しい順で)送る。
+            if limiter.upload_blocked_by_budget(lte):
+                limiter.note_budget_log()
+                limiter.write_status("upload_paused", lte)
+                log.info("Upload budget reached -- keeping clip on SD: %s", file_path)
+                time.sleep(0.5)
+                continue
+
+            try:
+                size = os.path.getsize(file_path)
+            except OSError:
+                size = 0
+            limiter.write_status("recording", lte)
             success = uploader.upload(file_path)
             mark_progress()
             if success:
+                limiter.note_uploaded(size, lte)
                 os.remove(file_path)
                 log.info("Upload OK, local file deleted: %s", file_path)
             else:
