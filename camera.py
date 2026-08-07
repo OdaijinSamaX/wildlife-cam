@@ -72,8 +72,12 @@ class WildlifeCamera:
             output_dir = get_videos_dir()
         os.makedirs(output_dir, exist_ok=True)
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"clip_{timestamp}.mp4"
-        filepath = os.path.join(output_dir, filename)
+        filepath = os.path.join(output_dir, f"clip_{timestamp}.mp4")
+        # RTCなしで時刻が戻った場合や同秒の再録画でも既存動画を上書きしない。
+        sequence = 1
+        while os.path.exists(filepath):
+            filepath = os.path.join(output_dir, f"clip_{timestamp}_{sequence:02d}.mp4")
+            sequence += 1
 
         encoder = H264Encoder(bitrate=self._bitrate)
         output = FfmpegOutput(filepath)

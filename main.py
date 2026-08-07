@@ -7,10 +7,12 @@ load_dotenv(get_env_file())
 
 from logger import get_logger
 from runtime import get_node_role, run_role
+from watchdog import start_progress_watchdog
 
 
 def main():
     log = get_logger("wildlife_cam")
+    start_progress_watchdog(log)
     role = get_node_role()
     run_role(role, log)
 

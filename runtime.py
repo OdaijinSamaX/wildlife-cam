@@ -1,4 +1,5 @@
 import os
+import re
 import time
 from datetime import datetime
 
@@ -8,6 +9,14 @@ from illuminator import Illuminator
 from link import ChildLinkClient, ParentLinkServer, apply_timestamp
 from sensor import MotionSensor
 from uploader import DriveUploader, WorkerUploader
+from video_storage import (
+    clear_retry,
+    enforce_limits,
+    looks_like_mp4,
+    quarantine,
+    record_retry,
+)
+from watchdog import mark_progress
 
 
 def create_uploader(log, *, require_trap_id: bool = True):
@@ -41,11 +50,10 @@ def _captured_at_from_path(file_path: str) -> str:
     命名規則から読めなければファイルの更新時刻で代替する。
     """
     name = os.path.basename(file_path)
-    stem = os.path.splitext(name)[0]
-    parts = stem.split("_")
-    if len(parts) >= 3:
+    match = re.search(r"(?:^|_)(\d{8})_(\d{6})(?:_|\.|$)", name)
+    if match:
         try:
-            dt = datetime.strptime(f"{parts[-2]}_{parts[-1]}", "%Y%m%d_%H%M%S")
+            dt = datetime.strptime(f"{match.group(1)}_{match.group(2)}", "%Y%m%d_%H%M%S")
             return dt.astimezone().isoformat()
         except ValueError:
             pass
@@ -65,6 +73,8 @@ def drain_pending_clips(log, uploader, *, skip_newer_than: float = 60.0, limit: 
     if not os.path.isdir(videos_dir):
         return 0
 
+    enforce_limits(log, videos_dir)
+
     now = time.time()
     pending = []
     for name in os.listdir(videos_dir):
@@ -83,6 +93,12 @@ def drain_pending_clips(log, uploader, *, skip_newer_than: float = 60.0, limit: 
             except OSError:
                 pass
             continue
+        if not looks_like_mp4(path):
+            try:
+                quarantine(log, path, "MP4 header check failed")
+            except OSError as exc:
+                log.warning("Could not quarantine invalid clip %s: %s", path, exc)
+            continue
         if now - stat.st_mtime < skip_newer_than:
             continue
         pending.append((stat.st_mtime, path))
@@ -99,17 +115,33 @@ def drain_pending_clips(log, uploader, *, skip_newer_than: float = 60.0, limit: 
             ok = uploader.upload(path, captured_at=_captured_at_from_path(path))
         except Exception as exc:
             log.warning("Retry upload raised for %s: %s", path, exc)
-            continue
+            ok = False
         if ok:
             try:
                 os.remove(path)
             except OSError:
                 pass
             log.info("Retry upload OK, local file deleted: %s", path)
+            clear_retry(path)
             sent += 1
         else:
-            log.warning("Retry upload still failing, keeping: %s", path)
-            # 1件失敗したら通信側の問題とみなし、残りは次回に回す。
+            max_retries = max(1, int(os.getenv("WILDLIFE_UPLOAD_MAX_RETRIES", "3")))
+            retries = record_retry(path)
+            if retries >= max_retries:
+                try:
+                    quarantine(log, path, f"upload failed {retries} times")
+                except OSError as exc:
+                    log.warning("Could not quarantine failed clip %s: %s", path, exc)
+                    break
+                # 恒久的に失敗する1本で後続を止めない。
+                continue
+            log.warning(
+                "Retry upload still failing (%d/%d), keeping: %s",
+                retries,
+                max_retries,
+                path,
+            )
+            # 多数同時失敗は通信断とみなし、この回はここで止める。
             break
 
     remaining = len(pending) - sent
@@ -124,6 +156,7 @@ def run_standalone(log):
     illuminator = Illuminator()
     uploader = create_uploader(log)
     was_armed = None
+    enforce_limits(log, get_videos_dir())
 
     # 安全思想「通信断=保留(作動しない)」は WorkerUploader 経路でしか成立しない。
     # 設定不備で DriveUploader に落ちると arm ゲートが消え、無条件に撮影し続ける。
@@ -150,6 +183,7 @@ def run_standalone(log):
 
     try:
         while True:
+            mark_progress()
             try:
                 drain_pending_clips(log, uploader)
             except Exception:
@@ -166,10 +200,12 @@ def run_standalone(log):
                         was_armed = is_armed
 
                     if not is_armed:
+                        mark_progress()
                         time.sleep(5)
                         continue
                 except Exception as exc:
                     log.warning("Failed to fetch trap arm state: %s", exc)
+                    mark_progress()
                     time.sleep(5)
                     continue
 
@@ -179,6 +215,7 @@ def run_standalone(log):
                 # 屋久島では通信断が常態なので、例外は待機の中断として扱い、
                 # ループ先頭の通信断ハンドリング(=保留)に戻す。
                 def _armed_or_pause() -> bool:
+                    mark_progress()
                     try:
                         return uploader.is_armed()
                     except Exception as exc:
@@ -199,6 +236,11 @@ def run_standalone(log):
 
             log.info("Motion detected -- starting recording")
 
+            if not enforce_limits(log, get_videos_dir()):
+                mark_progress()
+                time.sleep(30)
+                continue
+
             # 夜間は IR 投光器を点けたまま録画する。投光器側の光量センサーが
             # 明るい場所では点灯を抑えるので、昼夜の判定はソフトに持たない。
             with illuminator.lit():
@@ -208,8 +250,10 @@ def run_standalone(log):
                 time.sleep(1)
                 continue
             log.info("Recording complete: %s", file_path)
+            mark_progress()
 
             success = uploader.upload(file_path)
+            mark_progress()
             if success:
                 os.remove(file_path)
                 log.info("Upload OK, local file deleted: %s", file_path)
