@@ -41,6 +41,12 @@ ssh "${SSH_TARGET}" "
   pip3 install --quiet python-dotenv requests pybluez2
 "
 
+echo "[deploy] Applying network failover hardening (idempotent)..."
+# lte-his の DNS 修復・永続ジャーナル・wildlife-netwatch(60秒監視) を一括適用する。
+# lte-his プロファイルが無いノードでは中で警告して安全にスキップされる。
+ssh "${SSH_TARGET}" "sudo bash ${REMOTE_DIR}/scripts/setup-network.sh" \
+  || echo "[deploy] setup-network.sh はスキップ/失敗しました (非致命)。手動で確認してください"
+
 echo "[deploy] Done. Next steps:"
 echo "  1. Edit ${REMOTE_DIR}/config/.env and set GOOGLE_SCRIPT_URL"
 echo "  2. Standalone: ssh ${SSH_TARGET} 'cd ${REMOTE_DIR} && python3 main.py'"

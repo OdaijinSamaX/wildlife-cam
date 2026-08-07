@@ -1,0 +1,14 @@
+[Unit]
+Description=Run wildlife-netwatch every 60s
+# ネットワーク watchdog は無人運用の生命線。確実に自動起動させる。
+
+[Timer]
+# 起動 60 秒後から動き出し、以後 60 秒間隔。前回の実行完了を基準にするので
+# 実行が重なることはない。
+OnBootSec=60
+OnUnitActiveSec=60
+AccuracySec=5s
+Unit=wildlife-netwatch.service
+
+[Install]
+WantedBy=timers.target
