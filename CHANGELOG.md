@@ -8,6 +8,11 @@
 - 非プログラマ向けの日本語状態確認スクリプト `scripts/net-status.sh` を追加した。
 - 上記を冪等な `scripts/setup-network.sh` に集約し、`deploy.sh` から自動適用されるようにした。
 - 運用ドキュメント `docs/network-failover-hardening.md` を追加した。
+- glibc の resolv.conf 3 件上限による再発リスクを塞いだ: `lte-his` の `ipv4.dns-priority` を
+  v6 より優先させ、LTE が IPv4 のみで上がっても**先頭 3 件に必ず生きた v4 リゾルバが入る**ようにした
+  （v6 DNS は 1 件に集約）。負値(排他)は使わず自宅 `192.168.68.50` は下位に残す。
+- watchdog の健全性判定に **IPv4 名指しの DNS 確認**（`busybox nslookup` で v4 リゾルバへ v4 で直接問い合わせ）を追加し、
+  v6 経由で成功して v4 DNS の欠落を見逃す穴を塞いだ。
 
 ## v0.0.3 - 2026-05-22
 

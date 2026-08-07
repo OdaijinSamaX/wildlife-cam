@@ -19,6 +19,7 @@ set -uo pipefail
 # ---- 設定 -----------------------------------------------------------------
 PING_HOSTS=(1.1.1.1 8.8.8.8)
 DNS_NAMES=(www.google.com one.one.one.one)
+DNS4_SERVERS=(1.1.1.1 8.8.8.8)   # v4 リゾルバに v4 で直接問い合わせて疎通確認する宛先
 L7_URLS=(http://connectivitycheck.gstatic.com/generate_204 http://cp.cloudflare.com/generate_204)
 
 WIFI_CON="wifi-iot"       # 自宅 WiFi プロファイル (metric 600)
@@ -86,7 +87,7 @@ lte_available() { # LTE 経路が使える状態か（降格判断の前提）
 
 # ---- 健全性判定 -----------------------------------------------------------
 # それぞれ 0=OK / 1=NG を返し、結果はグローバルに残す。
-L3_OK=1; DNS_OK=1; L7_OK=1
+L3_OK=1; DNS4_OK=1; L7_OK=1
 
 check_l3() { # どちらか 1 つでも ping が通れば L3 OK（片方の障害で誤判定しない）
   local h
@@ -96,13 +97,30 @@ check_l3() { # どちらか 1 つでも ping が通れば L3 OK（片方の障�
   L3_OK=1; return 1
 }
 
-check_dns() { # どちらか 1 つでも名前が引ければ DNS OK
-  local n
-  for n in "${DNS_NAMES[@]}"; do
-    # 応答なしの DNS でブロックしないよう timeout で頭を抑える
-    if timeout 6 getent ahostsv4 "$n" >/dev/null 2>&1; then DNS_OK=0; return 0; fi
+# v4 リゾルバに v4 で直接問い合わせ、応答が返るかを確認する。
+# 通常の getent は resolv.conf 先頭の v6 リゾルバ経由で成功してしまい、
+# 「LTE が v4 のみで上がって v4 DNS が死んでいる」状態を見逃す。ここを直接見る。
+# busybox nslookup は終了コードが当てにならない（到達不能でも 0 を返す事がある）
+# ため、出力に回答レコードがあるかで判定する。
+check_dns4() {
+  if ! command -v busybox >/dev/null 2>&1; then
+    # busybox が無い環境向けの保険（v4 アドレス限定で名前解決）
+    local n
+    for n in "${DNS_NAMES[@]}"; do
+      if timeout 6 getent ahostsv4 "$n" >/dev/null 2>&1; then DNS4_OK=0; return 0; fi
+    done
+    DNS4_OK=1; return 1
+  fi
+  local server name out
+  for server in "${DNS4_SERVERS[@]}"; do
+    for name in "${DNS_NAMES[@]}"; do
+      out="$(timeout 5 busybox nslookup "$name" "$server" 2>/dev/null)"
+      if printf '%s\n' "$out" | awk '/[Aa]nswer/{a=1} a&&/^Address/{f=1} END{exit !f}'; then
+        DNS4_OK=0; return 0
+      fi
+    done
   done
-  DNS_OK=1; return 1
+  DNS4_OK=1; return 1
 }
 
 check_l7() { # どちらか 1 つでも 204 が返れば L7 OK（DNS+経路+到達性を一括検証）
@@ -114,21 +132,24 @@ check_l7() { # どちらか 1 つでも 204 が返れば L7 OK（DNS+経路+到�
   L7_OK=1; return 1
 }
 
-# 「実際にネットが使えるか」= L7 が本命。ただし L7 サーバ側の一時障害で
-# 誤判定しないよう、DNS+L3 が両方生きていれば救済的に健全扱いにする。
+# 健全判定の柱:
+#  1) v4 の名前解決が生きていること（DNS4）を必須にする。v6 経由で成功していても
+#     v4 リゾルバの欠落を見逃さないため。屋久島で LTE が v4 のみになる想定への備え。
+#  2) その上で L7(204) か L3(ping) のどちらかで実際に外へ出られること。
+#     L7 サーバ側の一時障害でも L3 が生きていれば健全扱いにして誤発動を防ぐ。
 is_healthy() {
-  check_l3; check_dns; check_l7
-  if [ "$L7_OK" -eq 0 ]; then return 0; fi
-  if [ "$DNS_OK" -eq 0 ] && [ "$L3_OK" -eq 0 ]; then return 0; fi
-  return 1
+  check_l3; check_dns4; check_l7
+  [ "$DNS4_OK" -eq 0 ] || return 1
+  [ "$L7_OK" -eq 0 ] || [ "$L3_OK" -eq 0 ] || return 1
+  return 0
 }
 
 health_summary() {
-  local l3 dns l7
+  local l3 dns4 l7
   [ "$L3_OK" -eq 0 ] && l3=OK || l3=NG
-  [ "$DNS_OK" -eq 0 ] && dns=OK || dns=NG
+  [ "$DNS4_OK" -eq 0 ] && dns4=OK || dns4=NG
   [ "$L7_OK" -eq 0 ] && l7=OK || l7=NG
-  echo "l3=$l3 dns=$dns l7=$l7 route=$(default_route_dev)"
+  echo "l3=$l3 dns4=$dns4 l7=$l7 route=$(default_route_dev)"
 }
 
 # ---- 復旧措置 -------------------------------------------------------------

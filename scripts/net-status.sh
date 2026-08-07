@@ -60,13 +60,21 @@ esac
 echo " 現在の通信回線 : $route_jp"
 
 # --- 2. 実際に外に出られるか（その場で確認） ---
-dns_rc=1; l7_rc=1
+dns_rc=1; dns4_rc=1; l7_rc=1
 timeout 6 getent ahostsv4 www.google.com >/dev/null 2>&1 && dns_rc=0
+# IPv4 リゾルバに v4 で直接問い合わせて確認（屋久島で v6 が張れない時の要）
+if command -v busybox >/dev/null 2>&1; then
+  out="$(timeout 5 busybox nslookup www.google.com 1.1.1.1 2>/dev/null)"
+  printf '%s\n' "$out" | awk '/[Aa]nswer/{a=1} a&&/^Address/{f=1} END{exit !f}' && dns4_rc=0
+else
+  dns4_rc=$dns_rc
+fi
 code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 6 http://connectivitycheck.gstatic.com/generate_204 2>/dev/null)" || code=""
 [ "$code" = "204" ] && l7_rc=0
 printf " 名前解決(DNS) : %b\n" "$(ok_ng $dns_rc)"
+printf "   └ IPv4 経由 : %b  （LTEがv4のみでも引けるか）\n" "$(ok_ng $dns4_rc)"
 printf " インターネット: %b\n" "$(ok_ng $l7_rc)"
-if [ "$dns_rc" -eq 0 ] && [ "$l7_rc" -eq 0 ]; then
+if [ "$dns4_rc" -eq 0 ] && [ "$l7_rc" -eq 0 ]; then
   echo " => 総合判定    : オンライン ✅"
 else
   echo " => 総合判定    : オフライン ❌（下の watchdog が自動で復旧を試みます）"

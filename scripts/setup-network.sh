@@ -44,17 +44,27 @@ write_if_changed() {
 }
 
 # ---------------------------------------------------------------------------
-log "1) LTE (lte-his) の DNS を修復"
+log "1) LTE (lte-his) の DNS を修復 + v4 を先頭3件に固定"
 if nmcli -t -f NAME con show | grep -qx "$LTE_CON"; then
-  # キャリア DNS を使う + 公開 DNS を保険として明示。IPv6 も同様。
+  # glibc リゾルバは resolv.conf の先頭 3 件しか使わない。NM は dns-priority が
+  # 同値だと IPv6 を IPv4 より前に並べるため、素の設定では先頭 3 件が全部 v6 に
+  # なり得る。屋久島で LTE が v4 のみで上がると（v6 ベアラ無し/3G 落ち）その 3 件が
+  # 全滅し 8/6 と同じ「名前が引けない」に戻る。
+  # 対策: ipv4.dns-priority を ipv6 より小さく（＝優先）して v4 を必ず先頭に出す。
+  #   - 正の値のみ使う。負値は NM ではそのコネクションの DNS が排他になり、
+  #     自宅の 192.168.68.50 が完全に消えるため採らない（非排他で下位に残す）。
+  #   - v6 は静的 1 件のみ + キャリア v6 は捨てて（ignore-auto-dns yes）数を絞り、
+  #     万一 NM が v6 を前に並べても先頭 3 件に生きた v4 が確実に入るようにする。
   nmcli con mod "$LTE_CON" \
     ipv4.ignore-auto-dns no \
     ipv4.dns "1.1.1.1 8.8.8.8" \
+    ipv4.dns-priority 10 \
     ipv4.route-metric 900 \
-    ipv6.ignore-auto-dns no \
-    ipv6.dns "2606:4700:4700::1111 2001:4860:4860::8888" \
+    ipv6.ignore-auto-dns yes \
+    ipv6.dns "2606:4700:4700::1111" \
+    ipv6.dns-priority 200 \
     ipv6.route-metric 900
-  log "   lte-his: ignore-auto-dns=no, 公開DNS 追加, metric=900 を維持"
+  log "   lte-his: v4 を dns-priority=10 で先頭に固定, v6 は 1 件に集約, metric=900 維持"
   # 変更を即反映（resolv.conf 更新のため）。失敗しても致命ではない。
   if nmcli -t -f NAME,DEVICE con show --active | grep -q "^${LTE_CON}:"; then
     nmcli con up "$LTE_CON" >/dev/null 2>&1 && log "   lte-his 再アクティベート OK" \
@@ -120,8 +130,9 @@ chmod +x "$SCRIPT_DIR/wildlife-netwatch.sh" "$SCRIPT_DIR/net-status.sh" 2>/dev/n
 
 log "完了。現在の状態:"
 echo "----------------------------------------------------------------------"
-nmcli -g ipv4.dns,ipv4.ignore-auto-dns con show "$LTE_CON" 2>/dev/null \
-  | sed 's/^/  lte-his ipv4.dns\/ignore-auto-dns: /'
+nmcli -g ipv4.dns,ipv4.dns-priority,ipv6.dns,ipv6.dns-priority con show "$LTE_CON" 2>/dev/null \
+  | sed 's/^/  lte-his dns(v4,prio,v6,prio): /'
+echo "  resolv.conf 先頭3件(v4であること):"; grep '^nameserver' /etc/resolv.conf | head -3 | sed 's/^/    /'
 systemctl is-enabled wildlife-netwatch.timer 2>&1 | sed 's/^/  timer enabled: /'
 systemctl is-active  wildlife-netwatch.timer 2>&1 | sed 's/^/  timer active : /'
 echo "----------------------------------------------------------------------"
