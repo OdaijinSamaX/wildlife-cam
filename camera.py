@@ -13,10 +13,23 @@ except ImportError:
     H264Encoder = None
     FfmpegOutput = None
 
+try:
+    # AfMode の列挙は libcamera 側にある。無い/古い環境でも整数値で代替する。
+    from libcamera import controls as _libcontrols
+except ImportError:
+    _libcontrols = None
+
 
 def _env_int(name: str, default: int) -> int:
     try:
         return int(os.getenv(name, "").strip() or default)
+    except ValueError:
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, "").strip() or default)
     except ValueError:
         return default
 
@@ -37,6 +50,8 @@ class WildlifeCamera:
         self._height = _env_int("CAMERA_HEIGHT", 720)
         self._bitrate = _env_int("CAMERA_BITRATE", 3_000_000)
         self._buffer_count = _env_int("CAMERA_BUFFER_COUNT", 4)
+        # レンズ焦点位置(ジオプター=1/焦点距離[m])。既定は過焦点寄りに固定する。詳細は _apply_fixed_focus。
+        self._lens_position = _env_float("WILDLIFE_LENS_POSITION", 0.5)
         self._camera = None
 
         if Picamera2 is None:
@@ -58,6 +73,54 @@ class WildlifeCamera:
             self._height,
             self._buffer_count,
         )
+        self._apply_fixed_focus()
+
+    def _apply_fixed_focus(self) -> None:
+        """レンズ焦点を手動で固定する。
+
+        Camera Module 3 (NoIR/標準) は起動時にオートフォーカスを実行せず、
+        LensPosition を無指定のままだとレンズが既定位置(約1m相当)に留まる。
+        罠の実距離は 3〜5m 以遠のため、そのままでは被写体が常に甘くなる。
+        ここで AfMode=Manual と LensPosition を明示し、~1m から無限遠までを
+        被写界深度に収める過焦点寄りの位置へ固定する。
+
+        LensPosition の単位はジオプター(= 1/焦点距離[m])。
+        既定 0.5 dioptre ≒ 焦点 2m。CM3 標準(f=4.74mm, F1.8, IMX708)の
+        過焦点距離 H は許容錯乱円 c≈0.003mm として
+        H ≒ f²/(F·c) ≒ 4.74² / (1.8×0.003) ≒ 4m 前後。
+        焦点を 2〜4m に置くと 3〜5m の罠と無限遠の双方が実用上シャープに入る。
+        既定を過焦点そのもの(≒0.25)より近い 0.5 にしているのは、
+        近距離側(1〜3m)を確実に捉えることを優先したため。遠側が甘い場合は
+        WILDLIFE_LENS_POSITION を 0.25(≒4m)〜0.6(≒1.7m) の範囲で下げて詰める。
+        (8/9 実機 A/B で確定予定。)
+
+        出典: picamera2 マニュアル(LensPosition はジオプター指定)、
+        Raspberry Pi Camera Module 3 データシート(IMX708, f=4.74mm / F1.8)。
+
+        AF 非搭載カメラ(v2 / HQ 等)は LensPosition 制御を持たず例外になるため、
+        警告を出して既定レンズのまま続行する(録画自体は落とさない)。
+        """
+        if self._stub or not self._camera:
+            return
+        try:
+            af_manual = 0  # AfModeEnum.Manual 相当のフォールバック値
+            if _libcontrols is not None:
+                af_manual = _libcontrols.AfModeEnum.Manual
+            self._camera.set_controls(
+                {"AfMode": af_manual, "LensPosition": self._lens_position}
+            )
+            focus_m = 1.0 / self._lens_position if self._lens_position > 0 else float("inf")
+            self._log.info(
+                "Fixed focus applied: LensPosition=%.3f dioptre (~%.1f m), AfMode=Manual",
+                self._lens_position,
+                focus_m,
+            )
+        except Exception:
+            self._log.warning(
+                "Fixed focus not applied (camera may lack autofocus); "
+                "continuing with default lens position",
+                exc_info=True,
+            )
 
     def record_clip(
         self,

@@ -1,5 +1,12 @@
 # Changelog
 
+## camera-fixed-focus: 固定フォーカス - 2026-08-09
+
+- Camera Module 3 (NoIR/標準) が起動時に AF を回さず、`LensPosition` 無指定だとレンズが既定位置(約1m相当)に留まり、罠の実距離(3〜5m以遠)で常に甘くなる問題に対し、`camera.py` 初期化時に **AfMode=Manual + LensPosition を明示して焦点を固定**するようにした。
+- 焦点は環境変数 `WILDLIFE_LENS_POSITION`(ジオプター=1/焦点距離[m]・既定 `0.5` ≒ 焦点2m)で調整可能。既定 0.5 は ~1m から無限遠までを被写界深度に収める過焦点寄りの値(CM3 f=4.74mm/F1.8, c≈0.003mm から H≒4m)。適用値は起動時に INFO ログへ出す。
+- AF 非搭載カメラ(v2/HQ 等)では制御が無く例外になるため、警告して既定レンズのまま録画を続行する(落とさない)。
+- README カメラ節と本 CHANGELOG に固定フォーカスの根拠・調整方法を追記した。実機での画質 A/B は 8/9 の TODO。
+
 ## lte-ipv6-armfix - 2026-08-08
 
 - **LTE の IPv6 ブラックホールを恒久化対策した。** LTE が IPv4 のみで上がると、Cloudflare 等の
