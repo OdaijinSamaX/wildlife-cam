@@ -4,6 +4,7 @@ import time
 from datetime import datetime
 
 from app_paths import get_videos_dir
+from arm_monitor import ArmStateMonitor
 from camera import WildlifeCamera
 from illuminator import Illuminator
 from link import ChildLinkClient, ParentLinkServer, apply_timestamp
@@ -208,6 +209,18 @@ def run_standalone(log):
                 "Fix config/.env, or set WILDLIFE_REQUIRE_ARM_GATE=0 to run without it."
             )
 
+    # arm 状態は背景スレッドで定期取得し、検知ループはメモリ値だけを読む。
+    # 待機ループから毎回ブロッキング HTTP を呼ぶと、LTE で v6 がブラックホール化した
+    # 際に 1 周が最長 30 秒ブロックし、PIR サンプリング周期が壊れて sustained motion が
+    # 成立しなくなる (2026-08-08 障害)。通信断=保留の安全思想は monitor 側で維持する。
+    arm_monitor = (
+        ArmStateMonitor(uploader, log=log)
+        if isinstance(uploader, WorkerUploader)
+        else None
+    )
+    if arm_monitor is not None:
+        arm_monitor.start()
+
     # 前回の稼働で取り残されたクリップを先に回収する。
     # 電源断や強制終了で残ったファイルは、これまで永久に放置されていた。
     try:
@@ -225,40 +238,32 @@ def run_standalone(log):
             except Exception:
                 log.exception("Pending clip drain failed - continuing anyway")
 
-            if isinstance(uploader, WorkerUploader):
-                try:
-                    is_armed = uploader.is_armed()
-                    if is_armed != was_armed:
-                        if is_armed:
-                            log.info("Trap %s is armed -- resuming motion detection", uploader.trap_id)
-                        else:
-                            log.info("Trap %s is disarmed -- skipping motion detection", uploader.trap_id)
-                        was_armed = is_armed
+            if arm_monitor is not None:
+                # 背景スレッドが更新したメモリ値のみを読む。ここでは通信しない。
+                arm_state = arm_monitor.state()
+                is_armed = arm_state == "armed"
+                if is_armed != was_armed:
+                    if is_armed:
+                        log.info("Trap %s is armed -- resuming motion detection", uploader.trap_id)
+                    else:
+                        log.info("Trap %s is disarmed -- skipping motion detection", uploader.trap_id)
+                    was_armed = is_armed
 
-                    if not is_armed:
-                        limiter.write_status("disarmed", lte)
-                        mark_progress()
-                        time.sleep(5)
-                        continue
-                except Exception as exc:
-                    log.warning("Failed to fetch trap arm state: %s", exc)
-                    limiter.write_status("comms_loss", lte)
+                if not is_armed:
+                    # サーバが disarmed と応えた場合と、通信断/起動直後で保留の場合を
+                    # 現地表示に区別して出す (どちらも作動はしない=安全側)。
+                    status = "disarmed" if arm_state == "disarmed" else "comms_loss"
+                    limiter.write_status(status, lte)
                     mark_progress()
                     time.sleep(5)
                     continue
 
-                # PIR待機中も定期的に arm 状態を問い合わせるが、その最中に
-                # LTE が切れると requests の例外がここまで素通りし、
-                # main.py は KeyboardInterrupt しか捕まえないためプロセスが落ちる。
-                # 屋久島では通信断が常態なので、例外は待機の中断として扱い、
-                # ループ先頭の通信断ハンドリング(=保留)に戻す。
+                # 待機中の arm 確認はメモリ読みのみ。ブロッキング HTTP を呼ばないので
+                # PIR サンプリング周期 (0.1s) が保たれる。通信断で状態が古くなれば
+                # monitor.is_armed() が False を返し、待機を中断して保留に戻す。
                 def _armed_or_pause() -> bool:
                     mark_progress()
-                    try:
-                        return uploader.is_armed()
-                    except Exception as exc:
-                        log.warning("Arm check failed while waiting for motion: %s", exc)
-                        return False
+                    return arm_monitor.is_armed()
 
                 limiter.write_status("armed_idle", lte)
                 motion_detected = motion_sensor.wait_for_sustained_motion(
@@ -326,6 +331,11 @@ def run_standalone(log):
 
             time.sleep(0.5)
     finally:
+        if arm_monitor is not None:
+            try:
+                arm_monitor.stop()
+            except Exception:
+                log.exception("Arm monitor stop failed")
         try:
             illuminator.close()
         except Exception:
@@ -349,36 +359,34 @@ def run_child(log):
     arm_state_client = create_uploader(log)
     was_armed = None
 
+    # 子機も arm 確認を背景スレッドに追い出し、待機ループはメモリ値のみ読む。
+    # arm の取得元は Worker 直 (WorkerUploader) か親機経由 (ChildLinkClient)。
+    # どちらも .is_armed() を持つ。通信断=保留は monitor 側で担保する。
+    arm_source = (
+        arm_state_client
+        if isinstance(arm_state_client, WorkerUploader)
+        else link_client
+    )
+    arm_monitor = ArmStateMonitor(arm_source, log=log)
+    arm_monitor.start()
+
     try:
         while True:
-            try:
-                is_armed = (
-                    arm_state_client.is_armed()
-                    if isinstance(arm_state_client, WorkerUploader)
-                    else link_client.is_armed()
-                )
-                if is_armed != was_armed:
-                    if is_armed:
-                        log.info("Trap %s is armed -- resuming motion detection", trap_id)
-                    else:
-                        log.info("Trap %s is disarmed -- skipping motion detection", trap_id)
-                    was_armed = is_armed
+            is_armed = arm_monitor.is_armed()
+            if is_armed != was_armed:
+                if is_armed:
+                    log.info("Trap %s is armed -- resuming motion detection", trap_id)
+                else:
+                    log.info("Trap %s is disarmed -- skipping motion detection", trap_id)
+                was_armed = is_armed
 
-                if not is_armed:
-                    time.sleep(5)
-                    continue
-            except Exception as exc:
-                log.warning("Failed to fetch arm state: %s", exc)
+            if not is_armed:
                 time.sleep(5)
                 continue
 
             motion_detected = motion_sensor.wait_for_sustained_motion(
                 1.0,
-                should_continue=(
-                    arm_state_client.is_armed
-                    if isinstance(arm_state_client, WorkerUploader)
-                    else link_client.is_armed
-                ),
+                should_continue=arm_monitor.is_armed,
             )
             if not motion_detected:
                 if was_armed is not False:
@@ -409,6 +417,10 @@ def run_child(log):
 
             time.sleep(0.5)
     finally:
+        try:
+            arm_monitor.stop()
+        except Exception:
+            log.exception("Arm monitor stop failed")
         try:
             illuminator.close()
         except Exception:
