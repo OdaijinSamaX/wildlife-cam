@@ -17,6 +17,9 @@ LTE_NETIF="wwan0"
 
 now() { date +%s; }
 
+# 起動からの経過秒（単調増加。時計飛びの影響を受けない）。
+uptime_secs() { awk '{printf "%d", $1}' /proc/uptime 2>/dev/null || echo 0; }
+
 # 秒数を「Xd Yh Zm」形式の日本語に
 human_dur() {
   local s="${1:-0}" d h m
@@ -111,7 +114,17 @@ if [ -r "$STATUS_FILE" ]; then
   vj="$verdict"; [ "$verdict" = "OK" ] && vj="正常" ; [ "$verdict" = "NG" ] && vj="異常(連続${fail}回)"
   echo " 監視の直近判定: ${vj:-不明}   （$(epoch_to_jst "${checked_at:-0}") 時点）"
   if [ -n "${online_since:-}" ] && [ "${online_since:-0}" -gt 0 ] 2>/dev/null; then
-    echo " 連続オンライン: $(human_dur $(( $(now) - online_since )))"
+    dur=$(( $(now) - online_since ))
+    up="$(uptime_secs)"
+    # RTC 無し端末は圏外起動時に時計が前回値のまま動く。オンライン後に NTP 同期で
+    # 時計が飛ぶと online_since が過去へずれ、連続オンラインが実際よりずっと長く出る
+    # (8/8: 実際 10 分なのに 20 時間と誤表示)。連続オンライン時間は端末の起動時間を
+    # 超えられないので、uptime を上限にして誤表示を防ぐ。
+    if [ "$up" -gt 0 ] 2>/dev/null && [ "$dur" -gt "$up" ]; then
+      echo " 連続オンライン: $(human_dur "$up") 以内（時計補正のため概算）"
+    else
+      echo " 連続オンライン: $(human_dur "$dur")"
+    fi
   else
     echo " 連続オンライン: （現在オフライン、または起動直後）"
   fi

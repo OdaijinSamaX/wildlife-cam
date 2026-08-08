@@ -6,6 +6,7 @@
 #
 # やること:
 #  1. lte-his が単独でも名前解決できるよう DNS を修復（8/6 障害の根治）
+#  1b. getaddrinfo を IPv4 優先化（8/8 の v6-over-LTE ブラックホール恒久対策）
 #  2. journald を永続化（障害後にログを追えるように）
 #  3. wildlife-net.log の logrotate 設定
 #  4. wildlife-netwatch.service / .timer を導入して有効化（60秒監視）
@@ -27,6 +28,10 @@ REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 LTE_CON="lte-his"
 WATCH_SCRIPT="$SCRIPT_DIR/wildlife-netwatch.sh"
 
+GAI_CONF="/etc/gai.conf"
+GAI_MARK_BEGIN="# >>> wildlife-cam ipv4-preference >>>"
+GAI_MARK_END="# <<< wildlife-cam ipv4-preference <<<"
+
 log() { echo "[setup-network] $*"; }
 
 # 冪等な atomic 書き込み。内容が同じなら触らない。
@@ -41,6 +46,47 @@ write_if_changed() {
   chmod 0644 "$tmp"
   mv -f "$tmp" "$path"   # 電源断でも 0 バイトにならないよう temp+mv
   log "更新: $path"
+}
+
+# /etc/gai.conf に「IPv4 優先」を冪等に投入する。
+# getaddrinfo は drop-in ディレクトリを読まず /etc/gai.conf のみを見るため、
+# 既存内容(既定は全てコメント)を保ったままマーカーで囲んだ管理ブロックを差し替える。
+ensure_gai_ipv4_precedence() {
+  local block existing stripped desired tmp
+  block="$GAI_MARK_BEGIN
+# LTE が IPv4 のみで上がると、Cloudflare 等の AAAA へ向けた v6 SYN が povo 上で
+# ブラックホール化し、connect timeout ぶん(AAAA 2 件 x 15s ≒ 30s)だけ毎回ブロックする
+# (2026-08-08 障害)。getaddrinfo を IPv4 優先にして v4 を先に返し、v6 の無駄待ちを避ける。
+# この 1 行があっても glibc の残りの既定 precedence 表はそのまま使われる(gai.conf 推奨手順)。
+precedence ::ffff:0:0/96  100
+$GAI_MARK_END"
+
+  existing=""
+  [ -f "$GAI_CONF" ] && existing="$(cat "$GAI_CONF")"
+
+  # 既存の管理ブロック(マーカー間)を除去してから付け直す=何度実行しても同じ結果。
+  stripped="$(printf '%s\n' "$existing" | awk -v b="$GAI_MARK_BEGIN" -v e="$GAI_MARK_END" '
+    $0==b {skip=1; next}
+    $0==e {skip=0; next}
+    !skip {print}
+  ')"
+
+  if [ -n "$stripped" ]; then
+    desired="$stripped
+$block"
+  else
+    desired="$block"
+  fi
+
+  if [ -f "$GAI_CONF" ] && [ "$(cat "$GAI_CONF")" = "$desired" ]; then
+    log "   変更なし: $GAI_CONF (IPv4 優先は適用済み)"
+    return 0
+  fi
+  tmp="$(mktemp "${GAI_CONF}.XXXXXX")"
+  printf '%s\n' "$desired" >"$tmp"
+  chmod 0644 "$tmp"
+  mv -f "$tmp" "$GAI_CONF"   # temp+mv で電源断時の破損を避ける
+  log "   更新: $GAI_CONF に IPv4 優先 (precedence ::ffff:0:0/96 100) を適用"
 }
 
 # ---------------------------------------------------------------------------
@@ -73,6 +119,13 @@ if nmcli -t -f NAME con show | grep -qx "$LTE_CON"; then
 else
   log "   警告: '$LTE_CON' プロファイルが見つかりません。スキップ"
 fi
+
+# ---------------------------------------------------------------------------
+log "1b) getaddrinfo を IPv4 優先化 (v6-over-LTE ブラックホール恒久対策 / 8/8)"
+# route-metric / dns-priority で v4 を優先しても、getaddrinfo は既定で AAAA を
+# 先に返すため、アプリは毎回 v6 を先に試して connect timeout を食う。gai.conf で
+# アドレス選択自体を v4 優先にして、この無駄待ちを断つ。
+ensure_gai_ipv4_precedence
 
 # ---------------------------------------------------------------------------
 log "2) journald を永続化"
@@ -133,6 +186,11 @@ echo "----------------------------------------------------------------------"
 nmcli -g ipv4.dns,ipv4.dns-priority,ipv6.dns,ipv6.dns-priority con show "$LTE_CON" 2>/dev/null \
   | sed 's/^/  lte-his dns(v4,prio,v6,prio): /'
 echo "  resolv.conf 先頭3件(v4であること):"; grep '^nameserver' /etc/resolv.conf | head -3 | sed 's/^/    /'
+if grep -q '^precedence ::ffff:0:0/96' "$GAI_CONF" 2>/dev/null; then
+  echo "  gai.conf IPv4優先: 適用済み (precedence ::ffff:0:0/96 100)"
+else
+  echo "  gai.conf IPv4優先: 未適用(!)"
+fi
 systemctl is-enabled wildlife-netwatch.timer 2>&1 | sed 's/^/  timer enabled: /'
 systemctl is-active  wildlife-netwatch.timer 2>&1 | sed 's/^/  timer active : /'
 echo "----------------------------------------------------------------------"
