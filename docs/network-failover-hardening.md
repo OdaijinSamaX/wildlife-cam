@@ -207,3 +207,57 @@ ssh wildlife-zero-ts 'sudo bash ~/wildlife-cam/scripts/setup-network.sh'
 
 `setup-network.sh` は何度実行しても同じ結果になる（冪等）。`lte-his` プロファイルが無いノードでは
 DNS 修復を安全にスキップする。
+
+---
+
+## 2026-08-08 の障害記録: v6-over-LTE ブラックホール → 検知が発火しない
+
+タッパー組込後の `wildlife-zero` で「PIR は正常なのに `Motion detected` が一切出ない」を
+現地診断した。真因は 3 段の連鎖だった。
+
+1. **IPv6 経路のブラックホール**: IPv6 default route が LTE(wwan0) 側にしか無く、povo LTE 上で
+   Cloudflare Worker への **v6 SYN が黙って捨てられる**。`getaddrinfo` は既定で `AAAA` を先に
+   返すため、`is_armed()` は毎回まず v6 で connect を試み、`AAAA` 2 件 × connect timeout 15s ≒
+   **約 30 秒**ブロックしてから v4 にフォールバックしていた（起動後 arm まで毎回 31 秒の正体）。
+2. **キャッシュが永久無効**: `WorkerUploader.is_armed()` がキャッシュの格納時刻に「リクエスト
+   **開始前**」の時刻を使っていたため、1 回の呼び出しが TTL(10s) を超えると、保存した瞬間に
+   キャッシュが失効済みになり、以後キャッシュが一切効かなかった。
+3. **検知ループが毎周ブロック**: `runtime.py` の PIR 待機ループは 0.1 秒ごとに
+   `should_continue=_armed_or_pause → is_armed()` を呼ぶ。①②により 1 周が約 30 秒ブロックし、
+   PIR サンプリングが実質 30 秒に 1 回になって、`wait_for_sustained_motion(1.0)`(1 秒間の連続検知)が
+   **数学的に成立しなくなっていた**。
+
+### 応急処置（実機で実施済み。当面はこの状態で凍結）
+
+- `/etc/gai.conf` に `precedence ::ffff:0:0/96 100`(IPv4 優先)を投入 → arm が 31s→2s に短縮し、
+  検知→録画→upload の E2E が 5 連続成功。
+
+### 恒久対策（本 PR）
+
+- **gai.conf の IPv4 優先を `setup-network.sh` に冪等化**（マーカー付き管理ブロック）。
+  route-metric / dns-priority で v4 を優先しても getaddrinfo は既定で `AAAA` を先に返すため、
+  アドレス選択自体を v4 優先にして v6 の無駄待ちを断つ。既定の precedence 表はこの 1 行があっても
+  残りはそのまま使われる（gai.conf の推奨手順どおり）。
+- **arm 確認を検知ループから分離**（`arm_monitor.ArmStateMonitor`）。arm 状態は背景スレッドで
+  定期取得し、待機ループはメモリ値のみ読む。通信中に何が起きてもループの周期(0.1s)は保たれる。
+  **通信断=保留(作動しない)** は monitor 側で担保（初回成功前・応答が staleness を超えたら False）。
+- `is_armed()` のキャッシュ格納時刻をレスポンス受領後に取り直し、`requests.Session` を使い回し、
+  timeout を `(connect, read)=(3,10)` に短縮。キャッシュ判定は `time.monotonic()` に変更。
+- `sensor.wait_for_sustained_motion()` の継続時間を `time.monotonic()` の実時間基準に変更。
+
+### 併発の小バグ: RTC 無しによる時計飛びで「連続オンライン」が誤表示
+
+RTC が無いため圏外起動時は時計が前回値のまま動き、オンライン後に NTP 同期で時計が飛ぶと
+`net-status.sh` の「連続オンライン」が実際よりずっと長く出ていた（実際 10 分を 20 時間と誤表示）。
+「連続オンライン時間は端末の起動時間(uptime)を超えられない」ので、`/proc/uptime`(単調増加)を
+上限に丸めて表示するフォールバックを入れた。
+
+### 実演後 TODO（実機・凍結解除後に人間が判断して実施）
+
+1. `./deploy.sh wildlife-zero-ts` で本 PR を配布（`setup-network.sh` が gai.conf 管理ブロックを冪等適用）。
+2. `sudo systemctl restart wildlife-cam` 後、`journalctl -u wildlife-cam -n 30 --no-pager` で
+   起動→arm までが数秒で、`Trap ... is armed` が速やかに出ることを確認。
+3. LTE 単独(WiFi 切)で PIR を反応させ、`Motion detected -- starting recording` が出て
+   録画→upload まで通ることを確認（応急処置の手動 gai.conf と同じ挙動になるはず）。
+4. arm 確認中に LTE を抜く/圏外にして、待機ループが固まらず「保留」に落ちること、
+   復帰後に再び armed になることを確認。
