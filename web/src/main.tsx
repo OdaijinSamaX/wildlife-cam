@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { LogOut, Play, RefreshCw } from "lucide-react";
 import type { Session } from "@supabase/supabase-js";
@@ -83,25 +83,45 @@ function VideoDashboard({ session }: { session: Session }) {
   const [loadingTraps, setLoadingTraps] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [updatingTrapId, setUpdatingTrapId] = useState<string | null>(null);
+  const videosLoaded = useRef(false);
+  const trapsLoaded = useRef(false);
+  const videosRequestInFlight = useRef(false);
+  const trapsRequestInFlight = useRef(false);
 
   const formattedCount = useMemo(() => new Intl.NumberFormat("ja-JP").format(videos.length), [videos.length]);
+  const latestVideoByTrap = useMemo(() => {
+    const latest = new Map<string, Video>();
+    for (const video of videos) {
+      const current = latest.get(video.trap_id);
+      if (!current || new Date(video.captured_at).getTime() > new Date(current.captured_at).getTime()) {
+        latest.set(video.trap_id, video);
+      }
+    }
+    return latest;
+  }, [videos]);
 
   async function loadVideos() {
-    setLoading(true);
-    setError(null);
-    const { data, error: queryError } = await supabase
-      .from("videos")
-      .select("id,trap_id,captured_at,status,hunter_note,created_at")
-      .order("captured_at", { ascending: false })
-      .order("created_at", { ascending: false })
-      .limit(100);
+    if (videosRequestInFlight.current) return;
+    videosRequestInFlight.current = true;
+    try {
+      const { data, error: queryError } = await supabase
+        .from("videos")
+        .select("id,trap_id,captured_at,status,hunter_note,created_at")
+        .order("captured_at", { ascending: false })
+        .order("created_at", { ascending: false })
+        .limit(100);
 
-    setLoading(false);
-    if (queryError) {
-      setError(queryError.message);
-      return;
+      if (queryError) {
+        setError(queryError.message);
+        return;
+      }
+      const incoming = (data ?? []) as Video[];
+      setVideos((current) => mergeVideos(current, incoming));
+    } finally {
+      videosLoaded.current = true;
+      videosRequestInFlight.current = false;
+      setLoading(false);
     }
-    setVideos((data ?? []) as Video[]);
   }
 
   async function loadProfile() {
@@ -122,29 +142,47 @@ function VideoDashboard({ session }: { session: Session }) {
   async function loadTraps() {
     if (!apiBaseUrl) {
       setError("VITE_WORKER_API_URL が未設定です。");
+      trapsLoaded.current = true;
+      setLoadingTraps(false);
       return;
     }
 
-    setLoadingTraps(true);
-    const response = await fetch(`${apiBaseUrl}/traps`, {
-      headers: { authorization: `Bearer ${session.access_token}` },
-    });
-    setLoadingTraps(false);
+    if (trapsRequestInFlight.current) return;
+    trapsRequestInFlight.current = true;
+    try {
+      const response = await fetch(`${apiBaseUrl}/traps`, {
+        headers: { authorization: `Bearer ${session.access_token}` },
+      });
 
-    if (!response.ok) {
+      if (!response.ok) {
+        setError("監視状態を取得できませんでした。");
+        return;
+      }
+
+      const data = (await response.json()) as Trap[];
+      setTraps((current) => (sameTraps(current, data) ? current : data));
+    } catch {
       setError("監視状態を取得できませんでした。");
-      return;
+    } finally {
+      trapsLoaded.current = true;
+      trapsRequestInFlight.current = false;
+      setLoadingTraps(false);
     }
-
-    const data = (await response.json()) as Trap[];
-    setTraps(data);
   }
 
   useEffect(() => {
     void loadDashboard();
-  }, []);
+    const pollingId = window.setInterval(() => {
+      void Promise.all([loadVideos(), loadTraps()]);
+    }, 20_000);
+
+    return () => window.clearInterval(pollingId);
+  }, [session.access_token, session.user.id]);
 
   async function loadDashboard() {
+    setError(null);
+    if (!videosLoaded.current) setLoading(true);
+    if (!trapsLoaded.current) setLoadingTraps(true);
     await Promise.all([loadVideos(), loadTraps(), loadProfile()]);
   }
 
@@ -248,9 +286,17 @@ function VideoDashboard({ session }: { session: Session }) {
               <article key={trap.trap_id} className="trap-card">
                 <div>
                   <p className="trap-id mono">{trap.trap_id}</p>
-                  <p className="trap-meta">
-                    最終疎通: {trap.last_seen_at ? formatDateTime(trap.last_seen_at) : "未確認"}
-                  </p>
+                  <div className="trap-meta-list">
+                    <p className="trap-meta">
+                      最終イベント: {latestVideoByTrap.get(trap.trap_id) ? formatDateTime(latestVideoByTrap.get(trap.trap_id)!.captured_at) : "記録なし"}
+                    </p>
+                    <p className="trap-meta">
+                      最終アップロード: {latestVideoByTrap.get(trap.trap_id) ? formatDateTime(latestVideoByTrap.get(trap.trap_id)!.created_at) : "記録なし"}
+                    </p>
+                    <p className="trap-meta">
+                      デバイス最終確認: {trap.last_seen_at ? formatDateTime(trap.last_seen_at) : "未確認"}
+                    </p>
+                  </div>
                 </div>
                 <button
                   type="button"
@@ -331,6 +377,45 @@ function statusLabel(status: Video["status"]): string {
     needs_action: "要対応",
   };
   return labels[status];
+}
+
+function mergeVideos(current: Video[], incoming: Video[]): Video[] {
+  const merged = new Map(current.map((video) => [video.id, video]));
+  for (const video of incoming) merged.set(video.id, video);
+
+  const next = [...merged.values()]
+    .sort((left, right) => {
+      const capturedDifference = new Date(right.captured_at).getTime() - new Date(left.captured_at).getTime();
+      return capturedDifference || new Date(right.created_at).getTime() - new Date(left.created_at).getTime();
+    })
+    .slice(0, 100);
+
+  if (next.length === current.length && next.every((video, index) => sameVideo(video, current[index]))) {
+    return current;
+  }
+  return next;
+}
+
+function sameVideo(left: Video, right: Video): boolean {
+  return left.id === right.id
+    && left.trap_id === right.trap_id
+    && left.captured_at === right.captured_at
+    && left.status === right.status
+    && left.hunter_note === right.hunter_note
+    && left.created_at === right.created_at;
+}
+
+function sameTraps(current: Trap[], incoming: Trap[]): boolean {
+  return current.length === incoming.length && current.every((trap, index) => {
+    const next = incoming[index];
+    return next !== undefined
+      && trap.trap_id === next.trap_id
+      && trap.name === next.name
+      && trap.is_armed === next.is_armed
+      && trap.last_seen_at === next.last_seen_at
+      && trap.updated_at === next.updated_at
+      && trap.created_at === next.created_at;
+  });
 }
 
 function formatDateTime(value: string): string {
