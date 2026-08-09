@@ -11,6 +11,51 @@ The repository also contains a React dashboard, a Cloudflare Worker API, and an 
 ## 現行アーキテクチャ
 
 ### Standalone β（主構成）
+```
+Standalone mode
+  Raspberry Pi / PC
+    -> Cloudflare Worker API
+    -> Cloudflare R2 private bucket
+    -> Supabase PostgreSQL videos table
+
+Parent-child mode (v0.0.3)
+  Raspberry Pi Zero 2 W (child)
+    -> Bluetooth relay
+  Raspberry Pi 5 (parent)
+    -> Cloudflare Worker API
+  -> Cloudflare R2 private bucket
+  -> Supabase PostgreSQL videos table
+React Web UI
+  -> Supabase Auth login
+  -> Supabase RLS videos select
+  -> Worker play-url endpoint
+  -> Worker trap list/update endpoints for Web UI
+  -> Worker trap-state endpoint for Pi polling
+  -> Worker streams R2 object with expiring token
+```
+
+## 追加されたフォルダ
+
+```
+worker/             # Cloudflare Worker API
+web/                # Vite + React Web UI
+supabase/schema.sql # tables, indexes, RLS policies
+pi/upload_video.py  # Pi/PC upload CLI
+link.py            # parent-child relay transport
+services/survey-api/ # 電波調査ページ + ローカル測定エンジン (mmcli/nmcli, tailscale serve 公開)
+```
+
+現地調査の道具箱 (toolbox): `scripts/site-survey.sh` / `scripts/carrier-scan.sh` に加え、
+スマホから Pi のモデムで測って記録できる **電波調査ページ** を
+[`services/survey-api/`](services/survey-api/README.md) で提供する (tailscale serve で公開)。
+
+## v0.0.3 親機子機モード
+
+実行モードは `WILDLIFE_NODE_ROLE` で切り替えます。
+
+- `standalone`: 従来通り、1台で検知・録画・アップロードまで行う
+- `parent`: Raspberry Pi 5。子機から動画を受信し、既存の WorkerUploader / DriveUploader でクラウドへ送る
+- `child`: Raspberry Pi Zero 2 W。PIR とカメラを担当し、自分で armed 状態を取得して親機へ動画送信を行う
 
 ハードウェア:
 
