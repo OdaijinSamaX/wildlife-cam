@@ -1,523 +1,307 @@
-# Wildlife Camera System MVP / v0.0.3
+# Wildlife Camera System β
 
-Raspberry Pi 5 + HC-SR501 PIR sensor + PiCamera3 による野生動物検知・録画・アップロードシステム。
+Wildlife Camera is an open-source, field-resilient camera system for Raspberry Pi.
+It detects motion, records short clips, and uploads them through Wi-Fi or LTE to a private cloud archive.
+The current β deployment runs standalone on a Pi Zero 2 W and is designed to fail safe during network loss, power loss, and unstable mobile coverage.
+The repository also contains a React dashboard, a Cloudflare Worker API, and an earlier parent-child operating mode.
 
-このリポジトリには、既存の Raspberry Pi 録画コードに加えて、Cloudflare R2、Cloudflare Workers、Supabase/PostgreSQL、Vite + React で構成するクラウド保存・閲覧MVPを含めています。
+野外に置いた Raspberry Pi で動体を検知し、短い動画を録画してクラウドへ送るシステムです。
+現在の主構成は **Pi Zero 2 W 1台で完結する standalone β** です。通信が不安定な場所や不意の電源断を前提に、撮影継続、送信保留、自己復旧、現地診断を実装しています。
 
-v0.0.3 では親機子機構成を追加し、Raspberry Pi 5 を親機、Raspberry Pi Zero 2 W を子機として動かせるようにしました。子機が PIR とカメラを担当し、親機は Bluetooth 経由で動画を受け取って既存の Worker / R2 / Supabase 経路へアップロードします。
+## 現行アーキテクチャ
 
-## MVP構成
+### Standalone β（主構成）
 
-```
-Standalone mode
-  Raspberry Pi / PC
-    -> Cloudflare Worker API
-    -> Cloudflare R2 private bucket
-    -> Supabase PostgreSQL videos table
+ハードウェア:
 
-Parent-child mode (v0.0.3)
-  Raspberry Pi Zero 2 W (child)
-    -> Bluetooth relay
-  Raspberry Pi 5 (parent)
-    -> Cloudflare Worker API
-  -> Cloudflare R2 private bucket
-  -> Supabase PostgreSQL videos table
-React Web UI
-  -> Supabase Auth login
-  -> Supabase RLS videos select
-  -> Worker play-url endpoint
-  -> Worker trap list/update endpoints for Web UI
-  -> Worker trap-state endpoint for Pi polling
-  -> Worker streams R2 object with expiring token
-```
+- Raspberry Pi Zero 2 W
+- Raspberry Pi Camera Module 3 NoIR
+- HC-SR501 PIR センサー（GPIO17）
+- Quectel EG25-G LTE モデム（NetworkManager + ModemManager）
+- 850nm IR 投光器（GPIO18、別電源、GND共通）
+- Wi-Fi / LTE / Tailscale
 
-## 追加されたフォルダ
+データフロー:
 
-```
-worker/             # Cloudflare Worker API
-web/                # Vite + React Web UI
-supabase/schema.sql # tables, indexes, RLS policies
-pi/upload_video.py  # Pi/PC upload CLI
-link.py            # parent-child relay transport
+```text
+PIR motion
+  -> Pi Zero 2 W records an MP4 clip
+  -> local SD queue (videos/)
+  -> Cloudflare Worker API
+  -> private Cloudflare R2 object
+  -> Supabase metadata and authentication
+  -> Vite + React dashboard
 ```
 
-## v0.0.3 親機子機モード
+`main.py` が `runtime.py` の standalone loopを起動し、armed状態が有効な間だけPIRを監視します。動画は送信成功後にSDから削除し、通信断・送信量上限到達・upload失敗時は `videos/` に残して再送します。
 
-実行モードは `WILDLIFE_NODE_ROLE` で切り替えます。
+### Parent-child α（別モード）
 
-- `standalone`: 従来通り、1台で検知・録画・アップロードまで行う
-- `parent`: Raspberry Pi 5。子機から動画を受信し、既存の WorkerUploader / DriveUploader でクラウドへ送る
-- `child`: Raspberry Pi Zero 2 W。PIR とカメラを担当し、自分で armed 状態を取得して親機へ動画送信を行う
+以前の Pi Zero 2 W（child）+ Raspberry Pi 5（parent）構成も残しています。
 
-実運用では、役割固定のエントリポイントを使う方が安全です。
+- `child_main.py`: PIR、録画、parentへの転送
+- `parent_main.py`: childから受信し、クラウドへupload
+- transport: Bluetooth RFCOMM または開発用TCP
+- service: [`wildlife-cam-child.service`](wildlife-cam-child.service) / [`wildlife-cam-parent.service`](wildlife-cam-parent.service)
 
-- `parent_main.py`: Pi 5 専用。Bluetooth 受信とサーバ送信だけを担当
-- `child_main.py`: Pi Zero 2 W 専用。PIR 検知、録画、Pi 5 への転送だけを担当
+新規の現地運用では standalone を主に使います。parent-childの詳細は [`docs/v0.0.3-parent-child.md`](docs/v0.0.3-parent-child.md) を参照してください。
 
-主な環境変数:
+## 現在の主要機能
+
+### Arm gate: 通信断は保留
+
+- Worker上の `traps.is_armed` を監視許可の正とします。
+- [`arm_monitor.py`](arm_monitor.py) の `ArmStateMonitor` が背景threadで状態を取得し、PIR loopはメモリ上の状態だけを読みます。
+- 初回取得前、通信失敗、または状態が古くなった場合は `comms_loss` として **保留（撮影しない）** に倒れます。
+- 通信確認の遅延がPIRの0.1秒samplingを塞がないため、LTEのIPv6 blackholeでも検知loopが止まりません。
+
+### Field limiter: LTE送信予算
+
+- LTE時だけ、直近1時間のupload量を `WILDLIFE_UPLOAD_BUDGET_MB_PER_HOUR`（既定250MB）以内に抑えます。
+- 上限到達後も **撮影は続け、uploadだけを止めてSDに保存** します。rolling windowが空けば自動再開します。
+- backlogが `WILDLIFE_UPLOAD_NEWEST_FIRST_BACKLOG`（既定10本）を超えると、実演価値の高い新しい動画を優先します。
+- 状態は再起動をまたいで永続化します。詳細は [`docs/upload-budget.md`](docs/upload-budget.md) を参照してください。
+- 撮影cooldownとburst circuit breakerも実装済みですが、撮り逃しを避けるため既定では無効です。
+
+### ネットワーク自己復旧
+
+- `wildlife-netwatch.timer` が60秒ごとにL3、IPv4 DNS、HTTP到達性を確認します。
+- 連続失敗に応じてLTE再接続、Wi-Fi一時降格、modem再初期化、daemon再起動を段階的に行います。
+- 最終手段のrebootにはrate limitがあり、無限再起動を避けます。
+- `scripts/setup-network.sh` がLTE DNS、永続journal、timer、logrotateを冪等に設定します。
+- 詳細は [`docs/network-failover-hardening.md`](docs/network-failover-hardening.md) を参照してください。
+
+### カメラとIR
+
+- Pi Zero 2 W向けにRAW streamを無効化し、camera/encoderのmemory pressureを抑えます。
+- `WILDLIFE_LENS_POSITION`（既定0.5 dioptre）でCamera Module 3の焦点をmanual固定します。
+- 録画中だけGPIO18でIR投光器へ給電し、例外時もcontext managerで消灯します。
+- `systemd` watchdogはmain loopの停止を検出し、短時間の再起動loopは `StartLimit` で抑えます。
+
+### IPv4優先とRTCなし対策
+
+- `scripts/setup-network.sh` が `/etc/gai.conf` にIPv4優先の管理blockを追加し、LTEの到達不能なIPv6を先に待つ問題を避けます。
+- RTCがないため、起動直後の時刻は正確とは限りません。`field-status.sh` でNTP同期状態を表示します。
+- 同じwall clock秒に録画しても、filenameへ連番を付けて既存動画を上書きしません。
+- networkの継続時間表示はuptimeを上限にして、NTP同期による時計jumpの誤表示を抑えます。
+
+### SD queueと電源断耐性
+
+- 0-byteまたは簡易検査に失敗したMP4は隔離し、恒久失敗の1本でqueue全体を詰まらせません。
+- 空き容量が2GiBを下回る前に古い動画を整理し、削除理由をlogへ残します。
+- runtime状態はtemp file + atomic renameで更新します。
+- systemd serviceはcrashから復帰し、camera hangはwatchdogが検出します。
+
+## セットアップ
+
+### 1. Piの依存package
+
+Raspberry Pi OS上で次を導入します。
+
+```bash
+sudo apt update
+sudo apt install -y python3-picamera2 python3-gpiozero ffmpeg network-manager modemmanager
+python3 -m pip install python-dotenv requests
+```
+
+### 2. 設定
+
+repository直下の `config/.env` を作成します。秘密情報はcommitしないでください。
 
 ```env
-WILDLIFE_NODE_ROLE=parent
-WILDLIFE_LINK_TRANSPORT=bluetooth
-WILDLIFE_LINK_PORT=4
-WILDLIFE_LINK_SERVICE_UUID=5e0ec070-4ef1-4f8e-9c12-7b0ac8cb3a11
+WILDLIFE_NODE_ROLE=standalone
+TRAP_ID=YOUR-TRAP-ID
+WILDLIFE_API_URL=https://YOUR-WORKER.example.workers.dev
+WILDLIFE_DEVICE_TOKEN=YOUR_DEVICE_TOKEN
+
+CAMERA_WIDTH=1920
+CAMERA_HEIGHT=1080
+CAMERA_BITRATE=8000000
+CAMERA_BUFFER_COUNT=4
+WILDLIFE_LENS_POSITION=0.5
+
+WILDLIFE_UPLOAD_BUDGET_MB_PER_HOUR=250
 ```
 
-補足:
+代表的なoptional設定:
 
-- ローカルPC上で親子通信だけ先に試す場合は `WILDLIFE_LINK_TRANSPORT=tcp` を使えます
-- `tcp` の場合、子機側に `WILDLIFE_PARENT_HOST=<親機IP>` が必要です
-- `bluetooth` の `WILDLIFE_LINK_PORT` は RFCOMM チャネルです。`1` から `30` の範囲を使ってください
-- Web UI の armed / disarmed は子機が Worker API から直接取得できます
-- 子機は `get_arm_state` に自分の `trap_id` を含めて親機へ送ります
-- そのため、検知停止の正は引き続きサーバ側です
+| 変数 | 既定 | 説明 |
+|---|---:|---|
+| `WILDLIFE_IR_ENABLED` | `1` | `0` でIR出力を無効化 |
+| `WILDLIFE_IR_WARMUP` | `0.5` | 録画前のIR先行点灯秒数 |
+| `WILDLIFE_LENS_POSITION` | `0.5` | manual焦点位置（dioptre） |
+| `WILDLIFE_UPLOAD_BUDGET_MB_PER_HOUR` | `250` | LTEのrolling upload上限 |
+| `WILDLIFE_UPLOAD_NEWEST_FIRST_BACKLOG` | `10` | 新しい動画優先へ切り替えるqueue本数 |
+| `WILDLIFE_MIN_FREE_BYTES` | `2147483648` | 録画用に残す最小空き容量 |
+| `WILDLIFE_VIDEO_MAX_AGE_DAYS` | `14` | local clipの保存日数 |
+| `WILDLIFE_MOTION_COOLDOWN_SEC` | `0` | 撮影cooldown。`0` は無効 |
+| `WILDLIFE_BURST_PAUSE_ENABLED` | `0` | burst circuit breaker |
 
-詳細手順は [docs/v0.0.3-parent-child.md](docs/v0.0.3-parent-child.md) を参照してください。
+### 3. Deploy
 
-## Supabase セットアップ
+母艦からSSH hostまたはIPを指定します。
 
-1. Supabase プロジェクトを作成します。
-2. SQL Editor で `supabase/schema.sql` を実行します。
-3. Authentication の Email/Password を有効化します。
-4. 自分と友人のユーザーを Auth で作成します。
-5. 最初の管理者を昇格します。
-
-```sql
-update public.profiles
-set role = 'admin'
-where email = 'you@example.com';
+```bash
+./deploy.sh <pi-ssh-host>
 ```
 
-RLS は有効化済みです。`authenticated` かつ `profiles` に存在するユーザーだけが動画一覧を参照できます。trap の一覧取得と armed 更新は Worker 経由で行い、Worker 側で Supabase ユーザー確認と admin 権限確認を行います。
+`deploy.sh` はsourceを同期し、依存packageとnetwork hardeningを適用します。`.env`、録画、logは上書きしません。
 
-## Cloudflare R2 / Worker セットアップ
+standalone serviceを初めて導入する場合:
 
-R2 バケットを作成します。
+```bash
+sudo install -m 0644 wildlife-cam.service /etc/systemd/system/wildlife-cam.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now wildlife-cam.service
+```
+
+service fileのuser・working directoryは配備先に合わせて確認してください。repositoryには秘密鍵、API key、credentialsを置かないでください。
+
+## 運用toolbox
+
+以下はPi上のrepository rootから実行する例です。
+
+| Tool | 用途 | 代表例 |
+|---|---|---|
+| `scripts/net-status.sh` | Wi-Fi/LTE、IPv4 DNS、Internet、netwatch履歴を日本語で表示 | `./scripts/net-status.sh` |
+| `scripts/field-status.sh` | 時刻、SD、camera service、送信予算、保留動画、networkを一画面表示 | `./scripts/field-status.sh` |
+| `scripts/site-survey.sh` | 候補地のWi-Fi/LTE、Internet、upload速度を約1分で判定 | `./scripts/site-survey.sh "候補地A"` |
+| `scripts/carrier-scan.sh` | EG25-Gの `AT+COPS=?` で周囲の登録可能networkを列挙。実行中はLTEを一時停止 | `sudo ./scripts/carrier-scan.sh "候補地A" --yes` |
+| `scripts/setup-network.sh` | LTE DNS、IPv4優先、journal、netwatchを冪等適用 | `sudo ./scripts/setup-network.sh` |
+| `deploy.sh` | 母艦からPiへsourceと設定unitを配備 | `./deploy.sh <pi-ssh-host>` |
+
+電池交換前の安全停止とservice復旧:
+
+```bash
+./scripts/safe-stop.sh
+./scripts/camera-restart.sh
+```
+
+非プログラマ向けの復旧手順は [`docs/field-recovery-guide.md`](docs/field-recovery-guide.md) にあります。
+
+## 現地調査
+
+候補地ではPiへ給電してnetwork接続を待ち、次を実行します。
+
+```bash
+./scripts/site-survey.sh "候補地A"
+sudo ./scripts/carrier-scan.sh "候補地A" --yes
+```
+
+Wi-Fi/LTE電波、Internet到達、upload実測、設置可否の読み方、記録templateは [`docs/site-survey-protocol.md`](docs/site-survey-protocol.md) を参照してください。carrier scanはLTEを一時中断するため、camera実演中には実行しないでください。
+
+## Cloud backend
+
+repositoryには次を含みます。
+
+- `worker/`: Cloudflare Worker。device upload、trap arm state、署名付き再生URL
+- `web/`: Vite + React dashboard。Supabase Auth、動画一覧、armed切替
+- `supabase/schema.sql`: videos、traps、profiles、RLS
+- private R2 bucket: MP4 object保存
+
+### Worker
 
 ```bash
 cd worker
-npm install
-npx wrangler r2 bucket create wildlife-cam-videos
-```
-
-`worker/wrangler.toml` の `SUPABASE_URL` と `APP_ORIGIN` を環境に合わせて変更します。
-
-ローカル開発用に `worker/.dev.vars.example` を `worker/.dev.vars` へコピーし、値を設定します。本番は Wrangler secrets を使います。
-
-```bash
+npm ci
+npx wrangler r2 bucket create <r2-bucket-name>
 npx wrangler secret put DEVICE_API_KEY
 npx wrangler secret put WORKER_SIGNING_SECRET
 npx wrangler secret put SUPABASE_SERVICE_ROLE_KEY
 npx wrangler secret put SUPABASE_ANON_KEY
-```
-
-ローカル起動:
-
-```bash
-cd worker
-npm run dev
-```
-
-Pi や別端末からローカル Worker を叩くときは、`http://localhost:8787` や `http://192.168.x.x:8787` ではなく、Cloudflare Tunnel を使う方が安定します。
-
-```bash
-cd worker
-npm run dev -- --tunnel
-```
-
-この場合、`wrangler` が表示する `https://...trycloudflare.com` を Pi 側の `--api-url` に使います。`trycloudflare.com` のURLは一時的で、Worker を再起動すると変わります。
-
-デプロイ:
-
-```bash
-cd worker
 npm run deploy
 ```
 
-本番で使っている Worker:
+project固有URLとsecretはenvironmentまたはWrangler secretで管理します。
 
-- `https://wildlife-cam-api.yabakei-wildlife-detection-project-mvp.workers.dev`
-
-## Web UI セットアップ
-
-```bash
-cd web
-npm install
-copy .env.example .env
-npm run dev
-```
+### Web UI
 
 `web/.env`:
 
 ```env
-VITE_SUPABASE_URL=https://YOUR_PROJECT_REF.supabase.co
+VITE_SUPABASE_URL=https://YOUR_PROJECT.supabase.co
 VITE_SUPABASE_ANON_KEY=YOUR_SUPABASE_ANON_KEY
-VITE_WORKER_API_URL=http://localhost:8787
+VITE_WORKER_API_URL=https://YOUR-WORKER.example.workers.dev
 ```
-
-注意:
-
-- `VITE_SUPABASE_URL` は `https://YOUR_PROJECT_REF.supabase.co` の形にしてください
-- `/rest/v1/` を付けないでください
-- `VITE_WORKER_API_URL` は、Worker を `--tunnel` で動かす場合は `https://...trycloudflare.com` に置き換えます
-- Vite のポートは `5173` 固定とは限りません。使用中なら `5174`, `5175`, `5176` とずれることがあります
-
-Cloudflare Pages へデプロイする場合は、ビルドコマンドを `npm run build`、出力ディレクトリを `dist`、環境変数に上記3つを設定します。
-
-Wrangler から直接デプロイする場合:
 
 ```bash
 cd web
+npm ci
+npm run dev
 npm run build
-npx wrangler pages deploy dist --project-name wildlife-cam-web
 ```
 
-本番で見るべき URL:
+Cloudflare Pagesではbuild commandを `npm run build`、output directoryを `dist` にします。
 
-- 固定の確認用デプロイURLではなく `https://wildlife-cam-web.pages.dev` を使います
-- `https://3d996045.wildlife-cam-web.pages.dev` のようなデプロイ固有URLは古い版を指し続けることがあります
+## 開発と検証
 
-## Pi / PC からのアップロード
+Python:
 
 ```bash
-pip install requests
-python pi/upload_video.py \
-  --file ./videos/event_001.mp4 \
-  --trap-id YMK-001 \
-  --captured-at "2026-05-18T02:14:00+09:00" \
-  --api-url http://localhost:8787 \
-  --device-token change-me-device-token
+python3 -m py_compile *.py
+python3 -m unittest discover -s tests -p 'test_*.py'
 ```
 
-環境変数でも指定できます。
+Shell:
 
 ```bash
-export WILDLIFE_API_URL=https://wildlife-cam-api.YOUR_SUBDOMAIN.workers.dev
-export WILDLIFE_DEVICE_TOKEN=change-me-device-token
-export TRAP_ID=YMK-001
+for file in scripts/*.sh; do bash -n "$file"; done
 ```
 
-失敗時は `upload_queue/` にJSONが残ります。実運用ではこのキューを定期的に再試行する systemd timer か cron を追加してください。
-
-既存の `main.py` も、`WILDLIFE_API_URL`、`WILDLIFE_DEVICE_TOKEN`、`TRAP_ID` が設定されていれば Worker API へアップロードします。未設定の場合は従来の Google Apps Script アップロードにフォールバックします。
-
-親機子機構成では、`WILDLIFE_API_URL` と `WILDLIFE_DEVICE_TOKEN` を Pi Zero 2 W にも置くと、armed/disarmed の判断を子機自身が行えます。Pi 5 は引き続き受信とサーバ送信だけを担当します。
-
-Pi 側の補足:
-
-- `--api-url http://localhost:8787` は Pi 上では使えません。Pi から見た `localhost` は Pi 自身です
-- ローカル検証では `wrangler dev -- --tunnel` で表示された `https://...trycloudflare.com` を使うのが簡単です
-- Raspberry Pi のユーザーが `pi` とは限らないため、作業パスは `/home/pi/...` に決め打ちしないでください
-- 例えばユーザーが `odaijinsamax` の場合は `/home/odaijinsamax/wildlife-cam` を使います
-
-Pi の実行例:
+Web / Worker:
 
 ```bash
-python3 ~/wildlife-cam/upload_video.py \
-  --file ~/wildlife-cam/videos/test.mp4 \
-  --trap-id YMK-001 \
-  --captured-at "2026-05-19T08:00:00+09:00" \
-  --api-url https://YOUR_TEMP_TUNNEL.trycloudflare.com \
-  --device-token YOUR_DEVICE_API_KEY
+(cd web && npm ci && npm run build)
+(cd worker && npm ci && npm run typecheck)
 ```
 
-## API
+## Repository map
 
-### `POST /upload-url`
-
-Device token required: `x-device-token`
-
-Input:
-
-```json
-{
-  "trap_id": "YMK-001",
-  "captured_at": "2026-05-18T02:14:00+09:00",
-  "filename": "event_001.mp4"
-}
+```text
+main.py / runtime.py       standalone/role dispatch and runtime loop
+arm_monitor.py             non-blocking armed state monitor
+field_limits.py            LTE upload budget and optional capture limits
+video_storage.py           bounded SD queue, retry, quarantine
+camera.py / sensor.py      Camera Module 3 and PIR
+illuminator.py             GPIO18 IR control
+watchdog.py                systemd watchdog heartbeat
+scripts/                   deploy, diagnosis, survey, recovery tools
+worker/                    Cloudflare Worker API
+web/                       React dashboard
+supabase/                  PostgreSQL schema and RLS
+docs/                      field operation and design notes
+tests/                     Python regression tests
 ```
 
-Output:
-
-```json
-{
-  "upload_url": "https://.../upload/<token>",
-  "r2_key": "videos/YMK-001/2026/05/18/<id>-event_001.mp4",
-  "expires_at": "2026-05-18T..."
-}
-```
-
-### `PUT /upload/:token`
-
-Uploads the video body to R2. The R2 bucket remains private.
-
-### `POST /videos`
-
-Device token required: `x-device-token`
-
-Registers metadata in Supabase.
-
-### `GET /traps/:trap_id`
-
-Device token required: `x-device-token`
-
-Pi が armed 状態を取得します。初回アクセス時は `traps` に自動登録され、既定値は `is_armed = true` です。
-
-### `GET /traps`
-
-Supabase bearer token required.
-
-Web UI が trap 一覧を取得します。`traps` は Web から直接 Supabase を読まず、Worker 経由で取得します。
-
-### `PATCH /traps/:trap_id`
-
-Supabase bearer token required.
-
-Web UI の admin が armed 状態を切り替えます。Worker 側で admin 権限を確認します。
-
-### `GET /play-url/:video_id`
-
-Supabase bearer token required. Returns an expiring Worker URL that streams the private R2 object.
-
-## curl 検証例
-
-```bash
-API=http://localhost:8787
-TOKEN=change-me-device-token
-
-UPLOAD_INFO=$(curl -s -X POST "$API/upload-url" \
-  -H "content-type: application/json" \
-  -H "x-device-token: $TOKEN" \
-  -d '{"trap_id":"YMK-001","captured_at":"2026-05-18T02:14:00+09:00","filename":"event_001.mp4"}')
-
-UPLOAD_URL=$(echo "$UPLOAD_INFO" | jq -r .upload_url)
-R2_KEY=$(echo "$UPLOAD_INFO" | jq -r .r2_key)
-
-curl -X PUT "$UPLOAD_URL" \
-  -H "content-type: video/mp4" \
-  --data-binary @./videos/event_001.mp4
-
-curl -X POST "$API/videos" \
-  -H "content-type: application/json" \
-  -H "x-device-token: $TOKEN" \
-  -d "{\"trap_id\":\"YMK-001\",\"captured_at\":\"2026-05-18T02:14:00+09:00\",\"r2_key\":\"$R2_KEY\"}"
-```
-
-## ローカル検証結果
-
-2026-05-19 時点で、以下はローカルで確認済みです。
-
-1. Raspberry Pi から `pi/upload_video.py` で動画をアップロードできる
-2. Worker が動画を受け取り、R2 に保存できる
-3. Worker が `videos` テーブルへメタデータを登録できる
-4. Supabase Auth で Web UI にログインできる
-5. Web UI に `videos` 一覧が表示される
-6. Web UI から動画を再生できる
-7. Web UI から trap の監視 ON/OFF を切り替えられる
-
-ローカル検証で実際に使った構成:
-
-- Web UI: `http://localhost:<vite-port>`
-- Worker: `npm run dev -- --tunnel`
-- Pi の `--api-url`: `https://...trycloudflare.com`
-
-再生まわりの実装メモ:
-
-- 動画配信は `GET /play-url/:video_id` で期限付きURLを払い出し、`GET /play/:token` で R2 オブジェクトを返します
-- ブラウザ再生には `Content-Range` と `Content-Length` の整合性が重要です
-- ローカル開発では Vite のポート変動があるため、Worker 側 CORS は `localhost` の実際の Origin を返す実装にしています
-
-armed 制御まわりの実装メモ:
-
-- trap ごとの ON/OFF 状態は `traps.is_armed` で管理します
-- Pi は `GET /traps/:trap_id` を定期取得し、`is_armed=false` の間は動体検知・録画・upload を行いません
-- Worker 側でも disarmed trap に対する `/upload-url`、`PUT /upload/:token`、`POST /videos` を拒否します
-- Web の trap 一覧と armed 更新は Worker 経由で行います。Supabase RLS の切り分けを UI へ持ち込まないためです
-- `OFF -> ON` に戻した直後は録画が始まるのではなく、動体検知待機に戻ります。Pi ログには `Trap <id> is armed -- resuming motion detection` が出ます
-
-## ハードウェア配料
-
-| HC-SR501 | Pi 5 ピン | 機能 |
-|----------|-----------|------|
-| VCC | Pin 2 | 5V電源 |
-| OUT | Pin 11 | GPIO17 |
-| GND | Pin 9 | GND |
-
-HC-SR501 のジャンパは **リピート(H)** 側にしてください。ノンリピート(L)だと出力 HIGH が 1〜2 秒で切れ、`wait_for_sustained_motion(1.0)` を満たせません。
-
-### IR 投光器（850nm・12V）
-
-録画中だけ点灯します。Pi とは別の 12V 電源系（単3×8の電池BOX）で駆動し、2SK4017 で 12V 側のローサイドを断続します。**GND だけは Pi と共通**にしてください（MOSFET がゲート電圧の基準を持てないため）。
-
-| 接続 | 先 |
-|------|-----|
-| Pi GPIO18 (Pin 12) | 100Ω → 2SK4017 ゲート |
-| 2SK4017 ゲート | 10kΩ → GND（プルダウン・必須） |
-| 2SK4017 ドレイン | IR投光器 (−) |
-| 2SK4017 ソース | GND（Pi の GND と電池BOX(−)の共通点） |
-| 電池BOX (+12V) | IR投光器 (+) |
-
-- 10kΩ プルダウンが無いと、Pi 起動中の GPIO ハイインピーダンス期間に投光器が点灯します
-- IR は LED なのでフライバックダイオードは不要です
-- 2SK4017 は 4V 駆動指定のため、3.3V GPIO では半開き運転になります。推力が要らない LED 負荷では実用上問題ありませんが、発熱は確認してください
-- 投光器に光量センサーが内蔵されているため、昼夜の判定はソフト側に持ちません
-- 環境変数: `WILDLIFE_IR_ENABLED`（`0` で無効・既定は有効）、`WILDLIFE_IR_WARMUP`（録画開始前の先行点灯秒数・既定 0.5）
-- ⚠️ `bench_solenoid.py` も GPIO18 を使います。ソレノイド機構を実装する際は、どちらかのピンを必ず変えてください
-
-### カメラの焦点（固定・環境変数で調整）
-
-Camera Module 3（NoIR/標準）はオートフォーカス搭載ですが、起動時に AF を回さず
-`LensPosition` を無指定にすると、レンズが既定位置（約 1m 相当）に留まります。
-罠の実距離は 3〜5m 以遠のため、無指定だと被写体が常に甘くなります。
-そこで `camera.py` は初期化時に **AfMode=Manual + LensPosition を明示して焦点を固定**します。
-
-- 環境変数: `WILDLIFE_LENS_POSITION`（単位はジオプター = 1/焦点距離[m]・既定 `0.5` ≒ 焦点 2m）
-- 既定 0.5 は「~1m から無限遠までを被写界深度に収める過焦点寄り」の値です。
-  CM3 標準（f=4.74mm, F1.8, IMX708）の過焦点距離は許容錯乱円 c≈0.003mm として
-  H ≒ f²/(F·c) ≒ 4m 前後。焦点を 2〜4m に置くと 3〜5m の罠と無限遠の双方が実用上シャープに入ります。
-- 遠側が甘い場合は値を下げます（`0.25` ≒ 焦点 4m、`0.6` ≒ 焦点 1.7m）。
-- 適用値は起動時に INFO ログへ出します（現地デバッグ用）。
-- AF 非搭載カメラ（v2 / HQ 等）では制御が無く例外になりますが、警告を出して既定レンズのまま録画を続けます。
-
-## セットアップ手順
-
-親機子機構成では、Pi Zero 2 W に `child_main.py`、Pi 5 に `parent_main.py` を配置して別サービスで起動してください。`main.py` は従来の単体運用や互換用途として残しています。
-
-### 1. Raspberry Piへのデプロイ
-
-```bash
-# Pi上でディレクトリ作成
-mkdir -p /home/pi/wildlife-cam/{videos,logs,config,gas}
-
-# ファイルをコピー（開発マシンから実行）
-scp -r /Users/shimpeikikukawa/wildlife-cam/* pi@<RPI_IP>:/home/pi/wildlife-cam/
-```
-
-### 2. 依存ライブラリのインストール（Pi上で実行）
-
-```bash
-sudo apt update
-sudo apt install -y python3-picamera2 python3-gpiozero ffmpeg
-pip3 install python-dotenv requests
-```
-
-### 3. Google Apps Script のデプロイ
-
-1. https://script.google.com にアクセス
-2. 「新しいプロジェクト」を作成
-3. `gas/upload.gs` の内容をエディタに貼り付けて保存
-4. 「デプロイ」→「新しいデプロイ」
-5. 種類: ウェブアプリ
-6. 実行者: 自分（Me）
-7. アクセス権限: 全員（Anyone）
-8. 「デプロイ」をクリックし、表示されたURLをコピー
-
-### 4. 環境変数の設定
-
-```bash
-nano /home/pi/wildlife-cam/config/.env
-```
-
-`GOOGLE_SCRIPT_URL=` の行に取得したURLを記入：
-```
-GOOGLE_SCRIPT_URL=https://script.google.com/macros/s/YOUR_SCRIPT_ID/exec
-LOG_LEVEL=INFO
-VIDEO_RETENTION_ON_FAIL=true
-```
-
-### 5. 起動テスト
-
-```bash
-cd /home/pi/wildlife-cam
-python3 main.py
-```
-
-注意:
-
-- `wildlife-cam.service` が動いている状態で `python3 main.py` を重ねて起動すると `GPIO busy` になります
-- 手動確認時は先に `sudo systemctl stop wildlife-cam`、常駐運用へ戻すときは `sudo systemctl start wildlife-cam` を使います
-
-### 6. 自動起動設定（systemd）
-
-```bash
-sudo nano /etc/systemd/system/wildlife-cam.service
-```
-
-```ini
-[Unit]
-Description=Wildlife Camera System
-After=network.target
-
-[Service]
-ExecStart=/usr/bin/python3 /home/pi/wildlife-cam/main.py
-WorkingDirectory=/home/pi/wildlife-cam
-User=pi
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-```
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable wildlife-cam
-sudo systemctl start wildlife-cam
-sudo systemctl status wildlife-cam
-```
-
-親機子機構成の systemd は次を使います。
-
-- Pi Zero 2 W: [wildlife-cam-child.service](wildlife-cam-child.service)
-- Pi 5: [wildlife-cam-parent.service](wildlife-cam-parent.service)
-
-運用上は、Pi の電源 ON/OFF と監視 ON/OFF は別です。
-
-- service が動いている: Pi アプリ自体は常駐中
-- Web UI で `監視中` / `停止中` を切り替える: 検知・録画・upload を許可するかどうか
-
-## ログ確認
-
-```bash
-tail -f /home/pi/wildlife-cam/logs/wildlife.log
-```
-
-systemd 運用中はこちらの方が正確です:
-
-```bash
-journalctl -u wildlife-cam -f
-```
-
-## フォルダ構成
-
-```
-/home/pi/wildlife-cam/
-├── main.py          # メインエントリポイント
-├── sensor.py        # PIRセンサー制御
-├── camera.py        # 録画モジュール
-├── uploader.py      # Google Driveアップロード
-├── logger.py        # ログユーティリティ
-├── config/
-│   └── .env         # 環境変数（GOOGLE_SCRIPT_URL等）
-├── gas/
-│   └── upload.gs    # Google Apps Script
-├── videos/          # 録画一時保存（アップロード後削除）
-└── logs/
-    └── wildlife.log # システムログ
-```
-
-## トラブルシューティング
-
-| 症状 | 対処 |
-|------|------|
-| `gpiozero` エラー | `sudo apt install python3-gpiozero` |
-| `picamera2` エラー | `sudo apt install python3-picamera2` |
-| アップロード失敗 | `.env` の `GOOGLE_SCRIPT_URL` を確認 |
-| 録画ファイルが残る | `LOG_LEVEL=DEBUG` でログ詳細確認 |
-| Pi から Worker に繋がらない | `wrangler dev -- --tunnel` を使い、`https://...trycloudflare.com` を `--api-url` に指定 |
-| Supabase ログイン後に一覧が出ない | `supabase/schema.sql` の実行漏れ、`profiles` 未作成、RLS を確認 |
-| 動画一覧は見えるが再生できない | `VITE_WORKER_API_URL` が古い tunnel URL のまま、または Worker 側 `APP_ORIGIN` / CORS を確認 |
-| `VITE_SUPABASE_URL` で認証が壊れる | `/rest/v1/` を付けずにプロジェクトURLだけを設定 |
-| `監視状態` に trap が出ない | `public.traps` が作成済みか、Pi が `/traps/:trap_id` を叩いているか、Web が最新デプロイかを確認 |
-| `GPIO busy` | `wildlife-cam.service` と手動起動の二重起動を疑う。`sudo systemctl status wildlife-cam` で確認 |
-| `停止中` にはなるが `監視中` に戻した時に何も起きない | 直後に録画は始まらず、動体検知待機へ戻るのが正しい挙動。Pi ログの `is armed -- resuming motion detection` を確認 |
+## Troubleshooting
+
+| 症状 | 確認・対処 |
+|---|---|
+| まず状態を知りたい | `./scripts/field-status.sh` を実行 |
+| IPはあるが名前解決できない | `./scripts/net-status.sh` でIPv4 DNSを確認し、`sudo ./scripts/setup-network.sh` を再適用 |
+| LTE/Wi-Fiが復帰しない | net-statusのnetwatch履歴を確認。2〜3分待って段階復旧させる |
+| `GPIO busy` | 手動起動との二重実行を避け、`./scripts/camera-restart.sh` を実行 |
+| camera serviceが停止中 | `./scripts/camera-restart.sh`。再停止する場合は `journalctl -u wildlife-cam.service -n 100` |
+| `Device or resource busy` | camera processの残存を確認し、serviceを再起動 |
+| 動画がSDに残る | 通信断、LTE予算到達、upload失敗のいずれか。field-statusの「送信保留」を確認 |
+| 動画がすぐWebへ出ない | LTE予算とbacklogを確認。Wi-Fi接続時は上限なしでdrainする |
+| 時刻が未同期 | network復帰後にNTP同期を待つ。同期前のfilenameは連番で衝突を回避 |
+| SD空きが少ない | field-statusで保留容量を確認。自動整理のlogを確認し、必要なら動画を回収 |
+| Web login後に一覧が出ない | Supabase schema、profile、RLS、Web environmentを確認 |
+| Webで再生できない | Worker origin設定、署名URL、R2 bindingを確認 |
+
+## Roadmap
+
+βの次段階では、camera実演から実際のwildlife monitoring/controlへ進めます。
+
+- 動画から対象動物の **頭数を計数** し、誤検知と複数個体を区別する
+- 判定結果に基づく **落とし扉制御** を統合する
+- 制御系は **通信断・推論不達では保留（作動させない）** を既定にする
+- **電源喪失時は扉開放** となるmechanical/electrical fail-safeを維持する
+- device heartbeat/event APIを追加し、Web UIへ実測phaseを表示する
+
+安全側の既定を変える機能は、現地試験と独立したfail-safe確認なしに有効化しません。
+
+## License
+
+現時点でlicense fileはありません。公開利用を想定する場合は、用途に合うOSS licenseを追加してください。
