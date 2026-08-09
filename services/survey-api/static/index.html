@@ -1,0 +1,490 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>屋久島 電波調査ログ</title>
+<style>
+  :root {
+    --bg: #F7F6F2; --card: #FFFFFF; --ink: #23272B; --sub: #6B7075;
+    --line: #E2E0DA; --accent: #2E7D4F; --accent-ink: #FFFFFF;
+    --chip: #EFEDE7; --danger: #B3432B;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#14171A; --card:#1D2125; --ink:#E8E6E1; --sub:#9BA0A6;
+      --line:#31363B; --accent:#3E9C66; --accent-ink:#0D1F15; --chip:#272C31; --danger:#E06B50; }
+  }
+  :root[data-theme="dark"] { --bg:#14171A; --card:#1D2125; --ink:#E8E6E1; --sub:#9BA0A6;
+    --line:#31363B; --accent:#3E9C66; --accent-ink:#0D1F15; --chip:#272C31; --danger:#E06B50; }
+  :root[data-theme="light"] { --bg:#F7F6F2; --card:#FFFFFF; --ink:#23272B; --sub:#6B7075;
+    --line:#E2E0DA; --accent:#2E7D4F; --accent-ink:#FFFFFF; --chip:#EFEDE7; --danger:#B3432B; }
+
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink);
+    font-family: system-ui, -apple-system, "Hiragino Sans", "Noto Sans JP", sans-serif;
+    font-size:16px; line-height:1.55; }
+  .wrap { max-width:28rem; margin:0 auto; padding:1rem 1rem 4rem; }
+  header { padding:.25rem 0 .75rem; }
+  h1 { font-size:1.15rem; margin:0; letter-spacing:.02em; }
+  h1 small { display:block; font-size:.72rem; font-weight:400; color:var(--sub); letter-spacing:.08em; }
+  h2 { font-size:.95rem; margin:0 0 .5rem; letter-spacing:.02em; display:flex; align-items:center; gap:.4rem; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:.9rem; margin-bottom:.9rem; }
+  label { display:block; font-size:.72rem; color:var(--sub); letter-spacing:.06em; margin:.7rem 0 .25rem; text-transform:uppercase; }
+  input[type=text], input[type=number] {
+    width:100%; padding:.65rem .7rem; font-size:1rem; color:var(--ink);
+    background:var(--bg); border:1px solid var(--line); border-radius:8px; }
+  input:focus, button:focus { outline:2px solid var(--accent); outline-offset:1px; }
+  .btn { display:block; width:100%; padding:.85rem; font-size:1.05rem; font-weight:600;
+    border:none; border-radius:10px; background:var(--accent); color:var(--accent-ink); cursor:pointer; }
+  .btn.secondary { background:var(--chip); color:var(--ink); font-weight:500; }
+  .btn:disabled { opacity:.5; cursor:not-allowed; }
+  .btn:active { transform:translateY(1px); }
+  .row { display:flex; gap:.5rem; }
+  .row > * { flex:1; }
+  .chips { display:flex; flex-wrap:wrap; gap:.4rem; }
+  .chips button { padding:.55rem .7rem; border-radius:999px; border:1px solid var(--line);
+    background:var(--chip); color:var(--ink); font-size:.9rem; cursor:pointer; display:flex; align-items:center; gap:.35rem; }
+  .chips button.on { border-color:var(--accent); background:var(--accent); color:var(--accent-ink); }
+  .dot { width:.55rem; height:.55rem; border-radius:50%; display:inline-block; }
+  .bars { display:flex; gap:.4rem; }
+  .bars button { flex:1; padding:.6rem 0; font-size:1rem; border-radius:8px;
+    border:1px solid var(--line); background:var(--chip); color:var(--ink); cursor:pointer; }
+  .bars button.on { border-color:var(--accent); background:var(--accent); color:var(--accent-ink); }
+  .gps { font-family: ui-monospace, "Cascadia Mono", monospace; font-size:.85rem;
+    font-variant-numeric: tabular-nums; color:var(--sub); min-height:1.3em; }
+  .gps.ok { color:var(--ink); }
+  .hint { font-size:.78rem; color:var(--sub); margin:.35rem 0 0; }
+  .hint a { color:var(--accent); }
+  .entry { border-top:1px solid var(--line); padding:.65rem 0; }
+  .entry:first-of-type { border-top:none; }
+  .entry .top { display:flex; justify-content:space-between; align-items:baseline; gap:.5rem; }
+  .entry .name { font-weight:600; }
+  .entry .when { font-size:.75rem; color:var(--sub); white-space:nowrap; }
+  .entry .meta { display:flex; flex-wrap:wrap; gap:.35rem .8rem; font-size:.85rem; margin-top:.15rem;
+    font-variant-numeric: tabular-nums; }
+  .entry .meta a { color:var(--accent); text-decoration:none; }
+  .entry .del { background:none; border:none; color:var(--danger); font-size:.78rem; cursor:pointer; padding:0; margin-top:.2rem; }
+  .sig { letter-spacing:.06em; }
+  footer.actions { position:fixed; left:0; right:0; bottom:0; background:var(--card);
+    border-top:1px solid var(--line); padding:.6rem 1rem; padding-bottom:calc(.6rem + env(safe-area-inset-bottom)); }
+  footer.actions .inner { max-width:28rem; margin:0 auto; display:flex; gap:.5rem; }
+  footer.actions button { flex:1; padding:.7rem; font-size:.92rem; }
+  .empty { color:var(--sub); font-size:.9rem; text-align:center; padding:1rem 0; }
+  @media (prefers-reduced-motion: reduce) { .btn:active { transform:none; } }
+
+  /* --- Pi 測定セクション --- */
+  .pi-status { display:flex; align-items:center; gap:.45rem; font-size:.8rem; color:var(--sub); margin-bottom:.6rem; }
+  .pi-status .dot { width:.6rem; height:.6rem; }
+  .pi-status.online .dot { background:var(--accent); }
+  .pi-status.offline .dot { background:var(--danger); }
+  .pi-status.checking .dot { background:var(--sub); }
+  .pi-btns { display:flex; flex-direction:column; gap:.5rem; }
+  .pi-out { margin-top:.7rem; font-size:.9rem; }
+  .pi-out .k { color:var(--sub); font-size:.72rem; text-transform:uppercase; letter-spacing:.06em; }
+  .pi-out .readout { display:grid; grid-template-columns:auto 1fr; gap:.2rem .7rem; margin-top:.35rem;
+    font-variant-numeric: tabular-nums; }
+  .pi-out .readout .lbl { color:var(--sub); }
+  .pi-msg { font-size:.82rem; color:var(--sub); margin-top:.5rem; min-height:1.2em; }
+  .pi-msg.err { color:var(--danger); }
+  .measured { font-size:.72rem; color:var(--accent); margin-left:.35rem; }
+  details.manual { margin-top:.6rem; border-top:1px solid var(--line); padding-top:.4rem; }
+  details.manual > summary { font-size:.8rem; color:var(--sub); cursor:pointer; letter-spacing:.04em; }
+  .banner { background:var(--chip); border:1px dashed var(--line); border-radius:8px;
+    padding:.55rem .7rem; font-size:.82rem; color:var(--sub); margin-bottom:.7rem; }
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>屋久島 電波調査ログ<small>WILDLIFE-CAM SITE SURVEY — 候補地ごとに 1 点記録</small></h1>
+  </header>
+
+  <!-- ============ Pi 測定 ============ -->
+  <div class="card">
+    <h2>📡 Pi 測定</h2>
+    <div class="pi-status checking" id="piStatus"><span class="dot"></span><span id="piStatusText">接続確認中…</span></div>
+    <div class="pi-btns">
+      <button class="btn" id="quickBtn">⚡ クイック測定（約30秒・無断線）</button>
+      <button class="btn secondary" id="fullBtn">📡 全キャリアスキャン（約4分・LTE断）</button>
+    </div>
+    <div class="pi-msg" id="piMsg"></div>
+    <div class="pi-out" id="piOut" hidden>
+      <div class="k">直近の測定結果（下の記録フォームに自動転記済み）</div>
+      <div class="readout" id="piReadout"></div>
+    </div>
+  </div>
+
+  <!-- ============ 記録フォーム ============ -->
+  <div class="card">
+    <h2>📝 記録</h2>
+    <button class="btn" id="gpsBtn">📍 現在地を取得</button>
+    <div class="gps" id="gpsOut">未取得</div>
+
+    <div class="row" style="margin-top:.5rem">
+      <input type="text" id="manualGps" placeholder="手動: 30.4056, 130.5710 (地図アプリからコピペ)" autocomplete="off">
+      <button class="btn secondary" id="manualBtn" style="flex:0 0 auto; width:auto; padding:.65rem .9rem">反映</button>
+    </div>
+
+    <label>候補地名</label>
+    <input type="text" id="site" placeholder="例: 海岸東 罠A 予定地" autocomplete="off">
+
+    <label>メモ（任意）</label>
+    <input type="text" id="note" placeholder="木の陰 / 尾根の向こう / 雨 など" autocomplete="off">
+
+    <details class="manual" id="manualBox">
+      <summary>手動入力（Pi が手元に無い下見用）を開く</summary>
+
+      <label>キャリア（測定に使った SIM の回線）</label>
+      <div class="chips" id="carrier"></div>
+
+      <label>ネットワーク手動検索で見えた網（複数タップ可）</label>
+      <div class="chips" id="seen"></div>
+      <p class="hint">設定 → モバイルネットワーク → 「自動的に選択」を OFF → 検索。出てきた事業者名を全部タップ。
+        <strong>終わったら必ず自動選択に戻す</strong>（戻し忘れると圏外のまま）</p>
+
+      <label>アンテナ表示（本数・手持ち SIM の網）</label>
+      <div class="bars" id="bars"></div>
+
+      <label>実測スピード（Mbps・上り優先）</label>
+      <div class="row">
+        <input type="number" id="mbps" inputmode="decimal" placeholder="例: 1.4" step="0.1" min="0">
+      </div>
+      <p class="hint">別タブで <a href="https://fast.com/ja/" target="_blank" rel="noopener">fast.com</a>（「詳細」で上りも出る）か
+        <a href="https://speed.cloudflare.com" target="_blank" rel="noopener">speed.cloudflare.com</a> を実行して数値を転記</p>
+    </details>
+
+    <div style="margin-top:.9rem">
+      <button class="btn" id="saveBtn">＋ この地点を記録</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div id="list"></div>
+  </div>
+</div>
+
+<footer class="actions">
+  <div class="inner">
+    <button class="btn secondary" id="csvBtn">CSV 書き出し</button>
+    <button class="btn secondary" id="clearBtn">全消去</button>
+  </div>
+</footer>
+
+<script>
+  const KEY = "yakusurvey_v1";
+  const CARRIERS = [
+    ["docomo系", "#CC0033"], ["au系(povo)", "#EB5505"],
+    ["SoftBank系", "#787878"], ["楽天", "#BF0000"], ["その他", "#5A7D9A"],
+  ];
+  const NETS = [
+    ["docomo", "#CC0033"], ["au/KDDI", "#EB5505"], ["SoftBank", "#787878"], ["楽天", "#BF0000"],
+  ];
+  // Pi の内部キー / オペレータ文字列 → 画面のキャリアchip・NETS名へ寄せる対応表
+  const CARRIER_MAP = [
+    [/docomo|ntt|44010/i, "docomo系", "docomo"],
+    [/au|kddi|povo|okinawa|4405/i, "au系(povo)", "au/KDDI"],
+    [/soft ?bank|sb|wcp|4402/i, "SoftBank系", "SoftBank"],
+    [/rakuten|楽天|44011/i, "楽天", "楽天"],
+  ];
+  function mapCarrier(s) {
+    const t = String(s || "");
+    for (const [re, chip, net] of CARRIER_MAP) if (re.test(t)) return { chip, net };
+    return { chip: "その他", net: null };
+  }
+  // RSRP(dBm) → アンテナ本数 0-4 の目安（手動 bars 未入力のとき自動反映）
+  function rsrpToBars(d) {
+    if (d == null || isNaN(d)) return null;
+    if (d >= -85) return 4; if (d >= -100) return 3; if (d >= -110) return 2; if (d >= -120) return 1; return 0;
+  }
+
+  let sel = { carrier: null, bars: null, gps: null, seen: new Set(),
+              rsrp: null, rsrq: null, snr: null, carriers: null, mbpsPi: null };
+  let piAvailable = false;
+
+  const $ = id => document.getElementById(id);
+  const load = () => JSON.parse(localStorage.getItem(KEY) || "[]");
+  const store = rows => localStorage.setItem(KEY, JSON.stringify(rows));
+
+  // carrier chips
+  CARRIERS.forEach(([name, color]) => {
+    const b = document.createElement("button");
+    b.innerHTML = `<span class="dot" style="background:${color}"></span>${name}`;
+    b.dataset.name = name;
+    b.onclick = () => { sel.carrier = name;
+      [...$("carrier").children].forEach(x => x.classList.toggle("on", x === b)); };
+    $("carrier").appendChild(b);
+  });
+  // visible-network chips (multi-select)
+  NETS.forEach(([name, color]) => {
+    const b = document.createElement("button");
+    b.innerHTML = `<span class="dot" style="background:${color}"></span>${name}`;
+    b.dataset.name = name;
+    b.onclick = () => { b.classList.toggle("on");
+      b.classList.contains("on") ? sel.seen.add(name) : sel.seen.delete(name); };
+    $("seen").appendChild(b);
+  });
+  // bars 0-4
+  for (let i = 0; i <= 4; i++) {
+    const b = document.createElement("button");
+    b.textContent = i;
+    b.onclick = () => { sel.bars = i;
+      [...$("bars").children].forEach(x => x.classList.toggle("on", x.textContent == i)); };
+    $("bars").appendChild(b);
+  }
+  // 外部（Pi 測定）から chip 選択状態を反映する
+  function reflectCarrierChip(chipName) {
+    sel.carrier = chipName;
+    [...$("carrier").children].forEach(x => x.classList.toggle("on", x.dataset.name === chipName));
+  }
+  function reflectSeenChips() {
+    [...$("seen").children].forEach(x => x.classList.toggle("on", sel.seen.has(x.dataset.name)));
+  }
+  function reflectBars() {
+    [...$("bars").children].forEach(x => x.classList.toggle("on", x.textContent == sel.bars));
+  }
+
+  $("gpsBtn").onclick = () => {
+    $("gpsOut").textContent = "取得中…";
+    $("gpsOut").classList.remove("ok");
+    navigator.geolocation.getCurrentPosition(p => {
+      sel.gps = { lat: p.coords.latitude, lon: p.coords.longitude, acc: Math.round(p.coords.accuracy) };
+      $("gpsOut").textContent = `${sel.gps.lat.toFixed(6)}, ${sel.gps.lon.toFixed(6)}  (±${sel.gps.acc}m)`;
+      $("gpsOut").classList.add("ok");
+    }, e => { $("gpsOut").textContent = "取得失敗: " + e.message + "（位置情報の許可を確認）"; },
+    { enableHighAccuracy: true, timeout: 15000 });
+  };
+
+  $("manualBtn").onclick = () => {
+    const m = $("manualGps").value.trim().match(/(-?\d+\.?\d*)[,\s]+(-?\d+\.?\d*)/);
+    if (!m) { alert("「緯度, 経度」の形式で貼って (例: 30.4056, 130.5710)"); return; }
+    sel.gps = { lat: parseFloat(m[1]), lon: parseFloat(m[2]), acc: 0 };
+    $("gpsOut").textContent = `${sel.gps.lat.toFixed(6)}, ${sel.gps.lon.toFixed(6)}  (手動入力)`;
+    $("gpsOut").classList.add("ok");
+  };
+
+  // ================= Pi 測定 =================
+  function setPiStatus(state, text) {
+    const el = $("piStatus");
+    el.className = "pi-status " + state;
+    $("piStatusText").textContent = text;
+  }
+  function piMsg(text, isErr) {
+    const el = $("piMsg");
+    el.textContent = text || "";
+    el.classList.toggle("err", !!isErr);
+  }
+  async function checkPi() {
+    setPiStatus("checking", "接続確認中…");
+    try {
+      const r = await fetch("/api/status", { cache: "no-store" });
+      if (!r.ok) throw new Error("status " + r.status);
+      const j = await r.json();
+      piAvailable = true;
+      let t = `Pi 接続 OK（${j.host || "?"}）`;
+      if (j.battery_mode) t += ` / 電源: ${j.battery_mode}`;
+      setPiStatus("online", t);
+      piMsg("");
+    } catch (e) {
+      piAvailable = false;
+      setPiStatus("offline", "Pi に接続できません（手動モードで記録できます）");
+      // Pi が居ないときは手動入力を開いておく
+      $("manualBox").open = true;
+    }
+  }
+
+  function renderPiReadout() {
+    const rows = [];
+    if (sel.carrier) rows.push(["在圏/回線", sel.carrier]);
+    if (sel.carriers) rows.push(["在圏キャリア", sel.carriers]);
+    if (sel.rsrp != null) rows.push(["RSRP", `${sel.rsrp} dBm`]);
+    if (sel.rsrq != null) rows.push(["RSRQ", `${sel.rsrq} dB`]);
+    if (sel.snr != null) rows.push(["SNR", `${sel.snr} dB`]);
+    if (sel.mbpsPi != null) rows.push(["上り(Pi)", `${sel.mbpsPi} Mbps`]);
+    if (sel.bars != null) rows.push(["アンテナ目安", `${sel.bars}/4`]);
+    if (!rows.length) { $("piOut").hidden = true; return; }
+    $("piReadout").innerHTML = rows.map(([k, v]) =>
+      `<span class="lbl">${k}</span><span>${String(v).replace(/</g, "&lt;")}</span>`).join("");
+    $("piOut").hidden = false;
+  }
+
+  $("quickBtn").onclick = async () => {
+    if (!piAvailable) { piMsg("Pi に接続できません。再確認します…", true); return checkPi(); }
+    $("quickBtn").disabled = true; $("fullBtn").disabled = true;
+    piMsg("クイック測定中…（LTE・WiFi・上りプローブ / 約30秒）");
+    try {
+      const r = await fetch("/api/quick", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ site: $("site").value.trim() }) });
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const j = await r.json();
+      applyQuick(j);
+      piMsg("クイック測定 完了。フォームに転記しました。");
+    } catch (e) {
+      piMsg("クイック測定に失敗: " + e.message, true);
+    } finally {
+      $("quickBtn").disabled = false; $("fullBtn").disabled = false;
+    }
+  };
+
+  function applyQuick(j) {
+    const lte = j.lte || {};
+    if (!lte.error) {
+      if (lte.rsrp_dbm != null) sel.rsrp = lte.rsrp_dbm;
+      if (lte.rsrq_db != null) sel.rsrq = lte.rsrq_db;
+      if (lte.snr_db != null) sel.snr = lte.snr_db;
+      const opName = lte.operator || lte.operator_code;
+      if (opName) { const m = mapCarrier(opName); reflectCarrierChip(m.chip);
+        if (m.net) { sel.seen.add(m.net); reflectSeenChips(); } }
+      const b = rsrpToBars(sel.rsrp); if (b != null) { sel.bars = b; reflectBars(); }
+    }
+    const up = j.upload || {};
+    if (!up.error && up.mbps != null) sel.mbpsPi = up.mbps;
+    // WiFi 上位を見えた網には混ぜない（別軸）が、メッセージで軽く示す
+    renderPiReadout();
+    // ツール不在があれば控えめに知らせる
+    const missing = [];
+    if (lte.error === "tool-missing") missing.push("mmcli");
+    if ((j.wifi || {}).error === "tool-missing") missing.push("nmcli");
+    if (up.error === "tool-missing") missing.push("curl");
+    if (missing.length) piMsg("注意: " + missing.join(",") + " が無く一部測定できません（手動で補完してください）", true);
+  }
+
+  $("fullBtn").onclick = async () => {
+    if (!piAvailable) { piMsg("Pi に接続できません。再確認します…", true); return checkPi(); }
+    if (!confirm("全キャリアスキャンを実行します。スキャン中 LTE が 3〜5 分切れます。よろしいですか?")) return;
+    $("quickBtn").disabled = true; $("fullBtn").disabled = true;
+    piMsg("全キャリアスキャンを開始しています…");
+    try {
+      const r = await fetch("/api/fullscan", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ site: $("site").value.trim() }) });
+      const j = await r.json();
+      if (r.status === 409) { piMsg("既にスキャン実行中です。完了を待ちます…"); }
+      else if (!r.ok) { throw new Error(j.error || ("HTTP " + r.status)); }
+      else { piMsg((j.note || "スキャン中…") ); }
+      pollFullscan();
+    } catch (e) {
+      piMsg("スキャン開始に失敗: " + e.message, true);
+      $("quickBtn").disabled = false; $("fullBtn").disabled = false;
+    }
+  };
+
+  function pollFullscan() {
+    let ticks = 0;
+    const iv = setInterval(async () => {
+      ticks++;
+      try {
+        const r = await fetch("/api/fullscan/status", { cache: "no-store" });
+        const j = await r.json();
+        if (j.state === "running") {
+          piMsg(`スキャン中…（${ticks * 5}s 経過 / LTE 断中でもこのページは生きています）`);
+          return;
+        }
+        clearInterval(iv);
+        $("quickBtn").disabled = false; $("fullBtn").disabled = false;
+        if (j.state === "done") { applyFullscan(j.result || {}); piMsg("全キャリアスキャン 完了。フォームに転記しました。"); }
+        else if (j.state === "error") { piMsg("スキャン失敗: " + (j.error || "不明"), true); }
+        else { piMsg("スキャン結果を取得できませんでした（state=" + j.state + "）", true); }
+      } catch (e) {
+        // ネットワークが一時的に切れることがある（LTE 断）。しばらくは待つ。
+        if (ticks > 90) { clearInterval(iv); $("quickBtn").disabled = false; $("fullBtn").disabled = false;
+          piMsg("状態取得が続けて失敗しました。時間をおいて /api/fullscan/status を確認してください。", true); }
+      }
+    }, 5000);
+  }
+
+  function applyFullscan(res) {
+    const present = (res.carriers_present || []).filter(c => c.present);
+    if (present.length) {
+      sel.carriers = present.map(c => c.label || c.carrier).join(", ");
+      present.forEach(c => { const m = mapCarrier(c.carrier || c.label); if (m.net) sel.seen.add(m.net); });
+      reflectSeenChips();
+    }
+    const s = res.serving;
+    if (s) {
+      if (s.rsrp_dbm != null) { sel.rsrp = s.rsrp_dbm; const b = rsrpToBars(s.rsrp_dbm); if (b != null) { sel.bars = b; reflectBars(); } }
+      if (s.rsrq_db != null) sel.rsrq = s.rsrq_db;
+      if (s.sinr != null && sel.snr == null) sel.snr = s.sinr;
+      if (s.carrier || s.label) reflectCarrierChip(mapCarrier(s.carrier || s.label).chip);
+    }
+    renderPiReadout();
+  }
+
+  // ================= 記録 =================
+  $("saveBtn").onclick = () => {
+    if (!$("site").value.trim()) { alert("候補地名を入れて"); return; }
+    // Pi 測定 or 手動のどちらかで最低限の情報があること
+    const hasPi = sel.rsrp != null || sel.mbpsPi != null || sel.carriers;
+    if (!hasPi && sel.carrier === null) { alert("キャリアを選ぶか、Pi 測定を実行して"); return; }
+    // 手動 mbps があればそれを、無ければ空
+    const manualMbps = $("mbps").value ? parseFloat($("mbps").value) : null;
+    const c = navigator.connection || {};
+    const rows = load();
+    rows.unshift({
+      t: new Date().toISOString(), site: $("site").value.trim(),
+      carrier: sel.carrier, bars: sel.bars, seen: [...sel.seen].join("+"),
+      mbps: manualMbps,
+      et: c.effectiveType || "", dl: c.downlink ?? "",
+      lat: sel.gps?.lat ?? "", lon: sel.gps?.lon ?? "", acc: sel.gps?.acc ?? "",
+      note: $("note").value.trim(),
+      // Pi 測定由来の拡張列
+      rsrp: sel.rsrp, rsrq: sel.rsrq, snr: sel.snr,
+      carriers: sel.carriers || "", mbps_pi: sel.mbpsPi,
+    });
+    store(rows); render();
+    // 連続測定用に地点名・GPS は残す。測定値と見えた網は地点ごとに取り直す。
+    $("mbps").value = ""; $("note").value = "";
+    sel.seen.clear(); reflectSeenChips();
+    sel.rsrp = sel.rsrq = sel.snr = sel.mbpsPi = null; sel.carriers = null;
+    renderPiReadout();
+  };
+
+  function fmtSig(n) { if (n == null || isNaN(n)) return ""; return "▁▃▅▇█".slice(0, n + 1).padEnd(5, "·") + ` ${n}/4`; }
+
+  function render() {
+    const rows = load();
+    $("list").innerHTML = rows.length ? "" : '<div class="empty">まだ記録なし。上のフォームで 1 地点目をどうぞ。</div>';
+    rows.forEach((r, i) => {
+      const d = new Date(r.t);
+      const when = `${d.getMonth()+1}/${d.getDate()} ${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`;
+      const div = document.createElement("div");
+      div.className = "entry";
+      const dot = (CARRIERS.find(c => c[0] === r.carrier) || ["", "#888"])[1];
+      const upDisp = (r.mbps_pi != null) ? `${r.mbps_pi} Mbps↑Pi` : (r.mbps != null ? `${r.mbps} Mbps` : "");
+      div.innerHTML = `
+        <div class="top"><span class="name"></span><span class="when">${when}</span></div>
+        <div class="meta">
+          ${r.carrier ? `<span><span class="dot" style="background:${dot}"></span> ${r.carrier}</span>` : ""}
+          ${r.rsrp != null ? `<span class="sig">${r.rsrp}dBm</span>` : (r.bars != null ? `<span class="sig">${fmtSig(r.bars)}</span>` : "")}
+          ${r.carriers ? `<span>📶 ${String(r.carriers).replace(/</g,"&lt;")}</span>` : (r.seen ? `<span>👁 ${r.seen}</span>` : "")}
+          ${upDisp ? `<span>${upDisp}</span>` : ""}
+          ${r.lat ? `<a href="https://maps.google.com/?q=${r.lat},${r.lon}" target="_blank" rel="noopener">地図 ±${r.acc}m</a>` : "<span>GPSなし</span>"}
+          ${r.note ? `<span>📝 ${r.note.replace(/</g,"&lt;")}</span>` : ""}
+        </div>
+        <button class="del">この記録を削除</button>`;
+      div.querySelector(".name").textContent = r.site;
+      div.querySelector(".del").onclick = () => {
+        if (confirm(`「${r.site}」の記録を削除する?`)) { const rs = load(); rs.splice(i, 1); store(rs); render(); }
+      };
+      $("list").appendChild(div);
+    });
+  }
+
+  $("csvBtn").onclick = () => {
+    const rows = load();
+    if (!rows.length) { alert("記録がまだない"); return; }
+    const esc = v => `"${String(v ?? "").replace(/"/g, '""')}"`;
+    const header = "﻿datetime,site,carrier,bars,visible_networks,mbps,effectiveType,downlink,lat,lon,accuracy_m,note,"
+      + "rsrp_dbm,rsrq_db,snr_db,carriers_present,upload_mbps_pi\n";
+    const csv = header + rows.map(r => [
+        r.t, r.site, r.carrier, r.bars, r.seen, r.mbps, r.et, r.dl, r.lat, r.lon, r.acc, r.note,
+        r.rsrp, r.rsrq, r.snr, r.carriers, r.mbps_pi
+      ].map(esc).join(",")).join("\n");
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+    a.download = `yakushima-survey-${new Date().toISOString().slice(0,10)}.csv`;
+    a.click();
+  };
+
+  $("clearBtn").onclick = () => {
+    if (confirm("全記録を消す? (CSV 書き出し済みか確認)")) { store([]); render(); }
+  };
+
+  render();
+  checkPi();
+</script>
