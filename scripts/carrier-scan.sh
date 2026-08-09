@@ -33,6 +33,8 @@
 #   --port <dev>       AT ポートを明示（既定は MM 停止前に自動検出→ EG25 は通常 /dev/ttyUSB2）
 #   --cops-window <s>  AT+COPS=? の読み取り窓（既定 210 秒。180〜240 を推奨）
 #   --qscan-timeout <s> opportunistic QSCAN のスキャン秒数（既定 60）
+#   --json             結果を JSON で stdout に出す（人間向けログは stderr）。survey-api
+#                      の /api/fullscan から非同期起動する用途。--yes を暗黙で有効化する。
 #
 # ⚠ 所要時間と注意:
 #   スキャン中は ModemManager を止めて AT ポートを占有し、AT+COPS=2 で網登録を
@@ -66,6 +68,7 @@ SITE="（未記入）"
 ASSUME_YES=0
 DRY_RUN=0
 SELF_TEST=0
+JSON_MODE=0                          # --json: 結果を JSON で stdout に、人間向けは stderr へ
 
 # 端末に出すときだけ色を付ける（パイプ/キャプチャ時は生のまま）
 if [ -t 1 ]; then
@@ -75,7 +78,8 @@ else
 fi
 
 now() { date +%s; }
-say() { echo -e "$*"; }
+# JSON モードでは人間向け出力を stderr に逃がし、stdout は最終 JSON だけにする。
+say() { if [ "${JSON_MODE:-0}" -eq 1 ]; then echo -e "$*" >&2; else echo -e "$*"; fi; }
 
 # ---- 引数パース -----------------------------------------------------------
 parse_args() {
@@ -84,6 +88,7 @@ parse_args() {
       --yes|-y)         ASSUME_YES=1 ;;
       --dry-run)        DRY_RUN=1 ;;
       --self-test)      SELF_TEST=1 ;;
+      --json)           JSON_MODE=1; ASSUME_YES=1 ;;   # 機械可読出力。無人前提なので --yes も暗黙 ON
       --port)           shift; AT_PORT="${1:-}" ;;
       --cops-window)    shift; COPS_WINDOW="${1:-210}" ;;
       --qscan-timeout)  shift; QSCAN_TIMEOUT="${1:-60}" ;;
@@ -448,6 +453,112 @@ render_report() {
   say "   場所=$SITE / $(join_by ' / ' "${rec_parts[@]}") / 方式=QENG+COPS"
 }
 
+# ---- JSON 出力（--json）用のヘルパ ---------------------------------------
+# 文字列を JSON 文字列としてクオート/エスケープ。改行/タブは空白へ潰す。
+json_str() {
+  local s="${1:-}"
+  s="${s//\\/\\\\}"; s="${s//\"/\\\"}"
+  s="${s//$'\n'/ }"; s="${s//$'\r'/}"; s="${s//$'\t'/ }"
+  printf '"%s"' "$s"
+}
+# 整数/負整数なら生値、そうでなければ null。
+json_num() {
+  local v="${1:-}"
+  case "$v" in
+    ''|-|*[!0-9-]*) echo "null" ;;
+    *)              echo "$v" ;;
+  esac
+}
+
+# render_report と同じ集計を JSON で stdout へ出す（--json 用）。
+# 形: {site, time, method, serving:{...}|null, carriers_present:[{...}]}
+render_report_json() {
+  local qeng_tsv="$1" cops_tsv="$2" qscan_tsv="${3:-}"
+
+  # --- QENG: 登録中セル（render_report と同じ選び方） ---
+  local serv_key="" serv_rsrp="" serv_rsrq="" serv_rssi="" serv_sinr="" serv_band="" serv_earfcn="" serv_rat=""
+  if [ -n "$qeng_tsv" ]; then
+    local qk qr qrq qrs qsi qb qe qrt
+    while IFS=$'\t' read -r qk qr qrq qrs qsi qb qe qrt; do
+      [ -z "${qk:-}" ] && continue
+      if [ -n "$qr" ] || [ -z "$serv_key" ]; then
+        serv_key="$qk"; serv_rsrp="$qr"; serv_rsrq="$qrq"; serv_rssi="$qrs"
+        serv_sinr="$qsi"; serv_band="$qb"; serv_earfcn="$qe"; serv_rat="$qrt"
+      fi
+      [ -n "$qr" ] && break
+    done <<< "$qeng_tsv"
+  fi
+
+  # --- COPS: 在圏キャリアの方式 ---
+  declare -A act_of
+  local order_dyn=("${ORDER[@]}")
+  if [ -n "$cops_tsv" ]; then
+    local ck ca
+    while IFS=$'\t' read -r ck ca; do
+      [ -z "${ck:-}" ] && continue
+      case " ${order_dyn[*]} " in *" $ck "*) ;; *) order_dyn+=("$ck") ;; esac
+      if [ -z "${act_of[$ck]:-}" ] || [ "$ca" = "LTE" ]; then act_of["$ck"]="$ca"; fi
+    done <<< "$cops_tsv"
+  fi
+
+  # --- QSCAN(opportunistic): キャリア別最良 RSRP ---
+  declare -A qscan_rsrp qscan_band
+  if [ -n "$qscan_tsv" ]; then
+    local sr sk srsrp srsrq sband searfcn spci
+    while IFS=$'\t' read -r sr sk srsrp srsrq sband searfcn spci; do
+      [ -z "${sk:-}" ] && continue
+      case " ${order_dyn[*]} " in *" $sk "*) ;; *) order_dyn+=("$sk") ;; esac
+      if [ -n "$srsrp" ]; then
+        if [ -z "${qscan_rsrp[$sk]:-}" ] || [ "$srsrp" -gt "${qscan_rsrp[$sk]}" ]; then
+          qscan_rsrp["$sk"]="$srsrp"; qscan_band["$sk"]="$sband"
+        fi
+      fi
+    done <<< "$qscan_tsv"
+  fi
+
+  if [ -n "$serv_key" ] && [ -z "${act_of[$serv_key]:-}" ]; then
+    act_of["$serv_key"]="${serv_rat:-在圏}"
+    case " ${order_dyn[*]} " in *" $serv_key "*) ;; *) order_dyn+=("$serv_key") ;; esac
+  fi
+
+  # --- serving オブジェクト ---
+  local serv_json="null"
+  if [ -n "$serv_key" ]; then
+    serv_json=$(printf '{"carrier":%s,"label":%s,"rsrp_dbm":%s,"rsrq_db":%s,"sinr":%s,"band":%s,"earfcn":%s,"rat":%s,"rating":%s}' \
+      "$(json_str "$serv_key")" "$(json_str "$(carrier_label "$serv_key")")" \
+      "$(json_num "$serv_rsrp")" "$(json_num "$serv_rsrq")" "$(json_num "$serv_sinr")" \
+      "$(json_str "$serv_band")" "$(json_str "$serv_earfcn")" "$(json_str "$serv_rat")" \
+      "$( [ -n "$serv_rsrp" ] && json_str "$(rate_rsrp "$serv_rsrp")" || echo null )")
+  fi
+
+  # --- carriers_present 配列 ---
+  local -a parts=()
+  local k label present act rsrp band rating obj
+  for k in "${order_dyn[@]}"; do
+    label="$(carrier_label "$k")"
+    present=false; act=null; rsrp=null; band=null; rating=null
+    if [ "$k" = "$serv_key" ] && [ -n "$serv_rsrp" ]; then
+      present=true; act="$(json_str "${serv_rat:-LTE}")"; rsrp="$(json_num "$serv_rsrp")"
+      band="$(json_str "$serv_band")"; rating="$(json_str "$(rate_rsrp "$serv_rsrp")")"
+    elif [ -n "${qscan_rsrp[$k]:-}" ]; then
+      present=true; rsrp="$(json_num "${qscan_rsrp[$k]}")"; band="$(json_str "${qscan_band[$k]:-}")"
+      rating="$(json_str "$(rate_rsrp "${qscan_rsrp[$k]}")")"
+      [ -n "${act_of[$k]:-}" ] && act="$(json_str "${act_of[$k]}")"
+    elif [ -n "${act_of[$k]:-}" ]; then
+      present=true; act="$(json_str "${act_of[$k]}")"
+    else
+      case "$k" in docomo|au|softbank|rakuten) present=false ;; *) continue ;; esac
+    fi
+    obj=$(printf '{"carrier":%s,"label":%s,"present":%s,"act":%s,"rsrp_dbm":%s,"band":%s,"rating":%s}' \
+      "$(json_str "$k")" "$(json_str "$label")" "$present" "$act" "$rsrp" "$band" "$rating")
+    parts+=("$obj")
+  done
+
+  printf '{"site":%s,"time":%s,"method":"QENG+COPS","serving":%s,"carriers_present":[%s]}\n' \
+    "$(json_str "$SITE")" "$(json_str "$(date -u +%Y-%m-%dT%H:%M:%SZ)")" \
+    "$serv_json" "$(join_by ',' "${parts[@]}")"
+}
+
 # ===========================================================================
 # AT 実行（実機・root 必須）
 # ===========================================================================
@@ -659,6 +770,18 @@ self_test() {
   check "QSCAN 節に au -108dBm"   "$(printf '%s\n' "$rtq" | grep -qE 'au\(KDDI\).*\-108dBm' && echo yes)" "yes"
 
   say ""
+  say "== 結合: --json 出力（render_report_json） =="
+  local rj; rj="$(render_report_json "$qtsv" "$ctsv" "")"
+  check "JSON 登録中セル=docomo"   "$(printf '%s' "$rj" | grep -qE '"serving":\{"carrier":"docomo"' && echo yes)" "yes"
+  check "JSON serving RSRP=-71"    "$(printf '%s' "$rj" | grep -qE '"rsrp_dbm":-71' && echo yes)" "yes"
+  check "JSON docomo 在圏 present"  "$(printf '%s' "$rj" | grep -qE '"carrier":"docomo","label":"docomo","present":true' && echo yes)" "yes"
+  check "JSON softbank 圏外 false"  "$(printf '%s' "$rj" | grep -qE '"carrier":"softbank"[^}]*"present":false' && echo yes)" "yes"
+  check "JSON method=QENG+COPS"     "$(printf '%s' "$rj" | grep -qE '"method":"QENG\+COPS"' && echo yes)" "yes"
+  if command -v python3 >/dev/null 2>&1; then
+    check "JSON パース可(python3)"  "$(printf '%s' "$rj" | python3 -c 'import sys,json;json.load(sys.stdin);print("yes")' 2>/dev/null)" "yes"
+  fi
+
+  say ""
   say "======================================================"
   if [ "$fail" -eq 0 ]; then
     say "$OK 自己検証 全 ${pass} 件パス"
@@ -785,13 +908,17 @@ real_scan() {
     say "$NG QENG も COPS も取得できませんでした。モデム状態を確認してください（mmcli -m any）。"
     exit 1
   fi
-  render_report "$qeng_tsv" "$cops_tsv" "$qscan_tsv"
-
-  say "======================================================"
-  # 最後に現在のネット状態を表示（回線が戻ったか確認）
-  if [ -x "$APP_HOME/scripts/net-status.sh" ]; then
-    say ""
-    "$APP_HOME/scripts/net-status.sh" || true
+  if [ "$JSON_MODE" -eq 1 ]; then
+    # stdout は JSON だけ（人間向けは say 経由で stderr に出ている）
+    render_report_json "$qeng_tsv" "$cops_tsv" "$qscan_tsv"
+  else
+    render_report "$qeng_tsv" "$cops_tsv" "$qscan_tsv"
+    say "======================================================"
+    # 最後に現在のネット状態を表示（回線が戻ったか確認）
+    if [ -x "$APP_HOME/scripts/net-status.sh" ]; then
+      say ""
+      "$APP_HOME/scripts/net-status.sh" || true
+    fi
   fi
 }
 
