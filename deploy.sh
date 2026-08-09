@@ -35,8 +35,10 @@ ssh "${SSH_TARGET}" "sudo install -d -o ${PI_USER} -g ${PI_USER} /var/lib/wildli
   || echo "[deploy] /var/lib/wildlife-cam を作れませんでした。app_home/state に退避します(非致命)"
 
 echo "[deploy] Copying files..."
+# リポジトリ全体を同期する。services/ (survey-api の測定エンジン+静的ページ) も
+# この一括 rsync に含まれる。テスト成果物や仮想環境は除外する。
 rsync -avz --exclude="*.pyc" --exclude="__pycache__" --exclude=".env" \
-  --exclude="videos/" --exclude="logs/" \
+  --exclude="videos/" --exclude="logs/" --exclude=".venv/" \
   "${LOCAL_DIR}/" "${SSH_TARGET}:${REMOTE_DIR}/"
 
 echo "[deploy] Installing dependencies on Pi..."
@@ -57,3 +59,7 @@ echo "  1. Edit ${REMOTE_DIR}/config/.env and set GOOGLE_SCRIPT_URL"
 echo "  2. Standalone: ssh ${SSH_TARGET} 'cd ${REMOTE_DIR} && python3 main.py'"
 echo "  3. Parent service: sudo systemctl restart wildlife-cam-parent"
 echo "  4. Child service: sudo systemctl restart wildlife-cam-child"
+echo "  5. 電波調査 API (survey-api): 初回のみ systemd 常駐化 + tailscale serve 公開が必要。"
+echo "     手順は ${REMOTE_DIR}/services/survey-api/README.md 参照:"
+echo "       sudo cp services/survey-api/survey-api.service /etc/systemd/system/ && sudo systemctl enable --now survey-api"
+echo "       sudo tailscale serve --bg --set-path /api http://127.0.0.1:18085/api   # / は静的ページ"
