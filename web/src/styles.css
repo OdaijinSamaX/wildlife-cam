@@ -207,6 +207,11 @@ input {
   color: #68756d;
 }
 
+.trap-meta-list {
+  display: grid;
+  gap: 4px;
+}
+
 .armed-toggle {
   min-width: 112px;
   border: 0;
