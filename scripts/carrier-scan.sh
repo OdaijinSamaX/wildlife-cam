@@ -1,6 +1,18 @@
 #!/usr/bin/env bash
 # carrier-scan.sh (v2) -- 設置候補地で「どのキャリアの電波が届くか」を実機で測る。
 #
+# v2.1 の修正（実機 2026-08-09 の再現バグに対処）:
+#   A) AT 対話を「reader 先行」方式へ。実機で確実に成功したレシピに合わせ、
+#      cat で reader を先に起動 → settle → コマンド書き込み → 応答を後読み、とした。
+#      旧実装は fd を開いた直後に write→read で応答の頭を取りこぼしていた。
+#   B) stty の失敗を致命扱いしない。EG25 は stty が
+#      "unable to perform all requested operations" を返して非ゼロ終了することが
+#      あるが対話は成立する。旧実装の `stty ... || return 1` が
+#      「AT ポートに応答がありません」の誤判定を招いていた＝本バグの主因。
+#   C) AT で OK が返るまで **2 秒間隔で最大 5 回リトライ**（MM 停止直後の settle 対策）。
+#   D) 後片付けにモデム救急処置を追加。MM 再開後に modem が failed / 不在なら
+#      mmcli -m any --reset を 1 回発行し、USB 再列挙 → lte-his 復帰を待つ。
+#
 # v1 との違い（実機 wildlife-zero で確定した事実に合わせた書き換え）:
 #   1) AT ポートの特定は **ModemManager を止める前に** 行う。MM 停止中は mmcli の
 #      情報が空になり、停止後にポートを探すと必ず失敗する（v1 の不具合）。
@@ -47,7 +59,8 @@
 # 判定基準（登録セルの RSRP）:
 #   >= -100dBm ◎ / -110 ○ / -120 △ / それ未満 or 不検出 ×
 #
-# 依存: bash, stty, systemctl, mmcli(検出用), nmcli(復帰確認用)。追加パッケージ不要。
+# 依存: bash, stty, timeout, cat, mktemp, tr, grep, systemctl,
+#       mmcli(ポート検出/状態確認/--reset 救急処置), nmcli(復帰確認用)。追加パッケージ不要。
 # 関連: 現地調査全体の手順は docs/site-survey-protocol.md（PR #6）。本スクリプトは
 #       その「電波の到達キャリア」を測る道具で、記録 1 行は site-survey.sh と同じ流儀。
 
@@ -563,52 +576,69 @@ render_report_json() {
 # AT 実行（実機・root 必須）
 # ===========================================================================
 
-at_probe() { # ポート $1 が AT に OK を返すか
-  local port="$1"
-  stty -F "$port" 115200 cs8 -cstopb -parenb raw -echo min 0 time 5 2>/dev/null || return 1
-  exec 8<>"$port" 2>/dev/null || return 1
-  printf 'AT\r\n' >&8 2>/dev/null || { at_close; return 1; }
-  local start=$SECONDS line
-  while IFS= read -r -t 2 line <&8; do
-    case "$line" in *OK*) at_close; return 0 ;; esac
-    (( SECONDS - start >= 3 )) && break
-  done
-  at_close
-  return 1
+# stty をポートに適用する。**失敗しても致命扱いにしない**のが要点。
+#   実機 EG25（EG25GGBR07A08M2G）では stty が
+#   "unable to perform all requested operations" を返して非ゼロ終了することが
+#   あるが、それでも AT 対話は成立する（Windows Claude の手動確認で確定）。
+#   旧実装は `stty ... || return 1` としていたため、ここで即失敗し
+#   「AT ポートに応答がありません」の誤判定になっていた＝本バグの主因。
+at_stty() {
+  stty -F "$1" 115200 cs8 -cstopb -parenb raw -echo 2>/dev/null || true
 }
 
 at_close() { exec 8>&- 2>/dev/null || true; exec 8<&- 2>/dev/null || true; }
 
-# AT コマンド発行。$1=コマンド $2=全体タイムアウト秒 $3=進捗ラベル(任意)。
-# 標準出力に応答本文、戻り値は OK=0 / ERROR・timeout=1。
+# AT コマンドを 1 回発行し、応答本文（\r 除去済み）を stdout に返す。
+# 戻り値: 最終応答が OK なら 0 / ERROR・timeout なら 1。$AT_PORT を対象にする。
 # $3 を与えると待機中の経過秒を端末(stderr)に表示する（長い COPS=? 窓向け）。
+#
+# 実機でそのまま成功した手順（Windows Claude の成功レシピ）に合わせる:
+#   1) reader(cat) を **先に** 起動して取りこぼしを防ぐ
+#   2) 少し待ってからコマンドを書き込む（settle）
+#   3) 応答（OK/ERROR）が来るか deadline まで後読みする
+# 旧実装は fd を開いた直後に write→read だったため、応答の頭を取りこぼしていた。
 at_cmd() {
-  local cmd="$1" deadline="${2:-10}" prog="${3:-}" line acc="" start rc=1 elapsed last_tick=0
-  stty -F "$AT_PORT" 115200 cs8 -cstopb -parenb raw -echo min 0 time 10 2>/dev/null || return 1
-  exec 8<>"$AT_PORT" 2>/dev/null || return 1
-  printf '%s\r\n' "$cmd" >&8
-  start=$SECONDS
-  while :; do
-    if IFS= read -r -t 3 line <&8; then
-      line="${line%$'\r'}"
-      acc+="$line"$'\n'
-      case "$line" in
-        OK) rc=0; break ;;
-        ERROR|+CME[[:space:]]ERROR*|+CMS[[:space:]]ERROR*) rc=1; break ;;
-      esac
+  local cmd="$1" deadline="${2:-10}" prog="${3:-}"
+  local port="$AT_PORT"
+  [ -n "$port" ] && [ -e "$port" ] || return 1
+  at_stty "$port"
+
+  local tmp; tmp="$(mktemp "${TMPDIR:-/tmp}/carrier-at.XXXXXX" 2>/dev/null)" || return 1
+  # reader を先に起動（deadline で自動終了）。応答は tmp に貯める。
+  timeout "$deadline" cat "$port" >"$tmp" 2>/dev/null &
+  local reader=$!
+  sleep 0.5                       # ポートが落ち着くのを待ってから打つ
+  printf '%s\r' "$cmd" >"$port" 2>/dev/null
+
+  local start=$SECONDS elapsed last_tick=0 rc=1 fin=0 norm=""
+  while [ "$fin" -eq 0 ]; do
+    norm="$(tr -d '\r' <"$tmp" 2>/dev/null)"
+    if printf '%s\n' "$norm" | grep -qxE 'OK'; then
+      rc=0; fin=1
+    elif printf '%s\n' "$norm" | grep -qxE 'ERROR|\+CME ERROR.*|\+CMS ERROR.*'; then
+      rc=1; fin=1
+    elif ! kill -0 "$reader" 2>/dev/null; then
+      rc=1; fin=1                 # reader が deadline に達して終了した
     fi
+    [ "$fin" -eq 1 ] && break
     elapsed=$(( SECONDS - start ))
     if [ -n "$prog" ] && [ -t 2 ] && [ $(( elapsed - last_tick )) -ge 6 ]; then
       last_tick=$elapsed
       printf '\r   %s … 経過 %ds / 最大 %ds ' "$prog" "$elapsed" "$deadline" >&2
     fi
-    (( elapsed >= deadline )) && { rc=1; break; }
+    sleep 1
   done
   [ -n "$prog" ] && [ -t 2 ] && printf '\r%*s\r' 62 '' >&2   # 進捗行を消す
-  at_close
-  printf '%s' "$acc"
+
+  kill "$reader" 2>/dev/null || true
+  wait "$reader" 2>/dev/null || true
+  tr -d '\r' <"$tmp" 2>/dev/null || true   # 応答本文をすべて出力（\r 除去）
+  rm -f "$tmp" 2>/dev/null || true
   return "$rc"
 }
+
+# 現在の $AT_PORT に AT を打って OK が返るか（1 回・短時間）。
+at_ping() { at_cmd "AT" 4 >/dev/null 2>&1; }
 
 # MM 稼働中に mmcli からモデムの AT ポートを引く（v1 の不具合＝停止後探索の修正）。
 mmcli_at_port() {
@@ -635,14 +665,34 @@ resolve_at_port() {
   return 1
 }
 
+# ポート $1 で AT 対話が成立するか確認する。成立したら $AT_PORT を $1 に確定。
+# 実機の癖（MM 停止直後はポートが落ち着くまで数秒かかる）に合わせ、
+# **AT で OK が返るまで 2 秒間隔で最大 $2 回（既定 5）リトライ**する。
+at_probe() {
+  local port="$1" retries="${2:-5}" i
+  [ -e "$port" ] || return 1
+  local save="$AT_PORT"; AT_PORT="$port"
+  for ((i=1; i<=retries; i++)); do
+    if at_ping; then return 0; fi
+    if [ "$i" -lt "$retries" ]; then
+      [ -t 2 ] && printf '\r   %s に AT 応答待ち… 再試行 %d/%d ' "$port" "$i" "$retries" >&2
+      sleep 2
+    fi
+  done
+  [ -t 2 ] && printf '\r%*s\r' 50 '' >&2
+  AT_PORT="$save"
+  return 1
+}
+
 # MM 停止後に、実際に AT が通るポートを最終確認（通らなければ候補を総当り）。
+# 主ポートは粘り強く（5 回）、フォールバック候補は素早く（2 回）試す。
 confirm_at_port_live() {
-  at_probe "$AT_PORT" && return 0
+  at_probe "$AT_PORT" 5 && return 0
   local p
   for p in "${AT_PORT_CANDIDATES[@]}"; do
     [ "$p" = "$AT_PORT" ] && continue
     [ -e "$p" ] || continue
-    if at_probe "$p"; then AT_PORT="$p"; return 0; fi
+    at_probe "$p" 2 && return 0
   done
   return 1
 }
@@ -654,6 +704,59 @@ confirm_at_port_live() {
 RESTORED=0
 NETWATCH_WAS_ACTIVE=0
 COPS_DEREGISTERED=0
+MODEM_RESET_DONE=0
+
+# mmcli から現在のモデム状態を返す（例: connected/registered/searching/failed）。
+# モデムが列挙されていなければ空文字を返す。
+modem_state() {
+  command -v mmcli >/dev/null 2>&1 || { printf ''; return; }
+  local midx
+  midx="$(mmcli -L 2>/dev/null | grep -oE '/Modem/[0-9]+' | head -1 | grep -oE '[0-9]+$')"
+  [ -n "$midx" ] || { printf ''; return; }   # モデム不在
+  mmcli -m "$midx" 2>/dev/null | grep -oiE "state: '?[a-z-]+" | head -1 | grep -oiE '[a-z-]+$'
+}
+
+# モデム救急処置: MM 再開後にモデムが failed / 不在なら mmcli --reset を 1 回だけ
+# 発行して USB 再列挙を待つ。実機 2026-08-09 15:45 の事象（失敗後 modem が failed に
+# 落ち、MM 再起動でも回復せず、mmcli -m any --reset → USB 再列挙 ~20-30s →
+# lte-his 自動再接続で復旧）への対処。lte-his 復帰待ちは呼び出し側の restore が担う。
+recover_modem_if_needed() {
+  command -v mmcli >/dev/null 2>&1 || return 0
+  local st="" i
+  # MM 再開直後はモデム再認識に数秒かかる。~15s は「列挙待ち」とみなす。
+  for ((i=0; i<15; i+=3)); do
+    st="$(modem_state)"
+    [ -n "$st" ] && [ "$st" != "failed" ] && return 0   # 正常に見えた → 何もしない
+    [ "$st" = "failed" ] && break                        # failed 確定 → 即対応
+    sleep 3                                              # まだ不在(空)なら待つ
+  done
+  st="$(modem_state)"
+  [ -n "$st" ] && [ "$st" != "failed" ] && return 0
+
+  # ここに来たら failed / 不在。reset は 1 回だけ。
+  [ "$MODEM_RESET_DONE" -eq 1 ] && return 0
+  MODEM_RESET_DONE=1
+  if [ -z "$st" ]; then
+    say "$WARN モデムが mmcli から見えません。mmcli -m any --reset で再列挙を試みます…"
+  else
+    say "$WARN モデムが $st 状態です。mmcli -m any --reset で復旧を試みます…"
+  fi
+  if ! mmcli -m any --reset >/dev/null 2>&1; then
+    say "$WARN mmcli --reset の発行に失敗しました（手動確認: mmcli -m any --reset）"
+    return 0
+  fi
+  say "・モデムを reset しました。USB 再列挙を待ちます（最大 30s）…"
+  for ((i=0; i<30; i+=3)); do
+    st="$(modem_state)"
+    if [ -n "$st" ] && [ "$st" != "failed" ]; then
+      say "$OK モデムを reset で復旧しました（状態: $st）。lte-his の復帰を待ちます…"
+      return 0
+    fi
+    sleep 3
+  done
+  say "$WARN reset 後もモデムが正常化しません（手動確認: mmcli -L / mmcli -m any）"
+  return 0
+}
 
 restore() {
   [ "$RESTORED" -eq 1 ] && return 0
@@ -674,7 +777,9 @@ restore() {
   systemctl start "$MM_SERVICE" >/dev/null 2>&1 \
     && say "$OK ModemManager を再開しました" \
     || say "$NG ModemManager の再開に失敗（手動確認: systemctl start $MM_SERVICE）"
-  # 2) lte-his 再接続を待つ
+  # 1.5) モデム救急処置: failed / 不在なら mmcli --reset を 1 回発行して再列挙を待つ
+  recover_modem_if_needed
+  # 2) lte-his 再接続を待つ（reset 後の自動再接続もここで最大 RECONNECT_WAIT 秒待つ）
   local i connected=0
   for ((i=0; i<RECONNECT_WAIT; i+=3)); do
     if nmcli -t -f NAME,DEVICE con show --active 2>/dev/null | grep -q "^${LTE_CON}:"; then
