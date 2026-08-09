@@ -5,6 +5,9 @@ Description=Wildlife Camera System
 After=network-online.target NetworkManager.service ModemManager.service
 Wants=network-online.target
 # 通信が無くてもアプリ側は保留して待てるので、依存は Wants に留める。
+# 短時間の再起動ループで電池を浪費しない。30分に5回失敗したら停止する。
+StartLimitIntervalSec=30min
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -12,14 +15,14 @@ User=odaijinsamax
 WorkingDirectory=/home/odaijinsamax/wildlife-cam
 Environment=WILDLIFE_CAM_HOME=/home/odaijinsamax/wildlife-cam
 ExecStart=/usr/bin/python3 /home/odaijinsamax/wildlife-cam/main.py
+NotifyAccess=main
+# 主ループの進捗監視(既定4分)と合わせ、hangを約5分で復旧する。
+WatchdogSec=1min
 
 # 無人運用では理由を問わず復帰させる。on-failure だと正常終了(exit 0)で
 # 止まったままになる。
 Restart=always
 RestartSec=10
-# 連続再起動で systemd に見捨てられると罠が沈黙する。現地では誰も直せない
-# ので、レート制限そのものを外す。
-StartLimitIntervalSec=0
 
 StandardOutput=journal
 StandardError=journal

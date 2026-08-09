@@ -1,0 +1,14 @@
+[Unit]
+Description=Wildlife Camera network self-healing watchdog (oneshot)
+# ネットワークを直す側なので network-online.target は待たない。
+# むしろ経路が無い状況こそ動く必要がある。
+After=NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+Type=oneshot
+# nmcli のシステム接続変更・systemctl restart・reboot を行うため root。
+User=root
+ExecStart=/home/odaijinsamax/wildlife-cam/scripts/wildlife-netwatch.sh
+# 1 周期が長引いても次の timer 発火までに終わるよう上限を切る。
+TimeoutStartSec=90

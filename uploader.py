@@ -81,27 +81,40 @@ class WorkerUploader:
         self.trap_id = trap_id.strip()
         self._log = logging.getLogger("wildlife_cam")
         self._cached_arm_states: dict[str, tuple[bool, float]] = {}
+        # LTE では毎回の TCP/TLS ハンドシェイクが高くつくので接続を使い回す。
+        self._session = requests.Session()
+        # arm 確認の timeout は (connect, read) タプルで短く固定する。
+        # v6 ブラックホール時に既定の 15s 単一値では 1 本あたり最長 15s ブロックし、
+        # AAAA 2 件で 30s に達していた (2026-08-08 障害)。connect を 3s に絞り、
+        # gai.conf の v4 優先と併せて素早く v4 へ倒す。
+        self._arm_timeout: tuple[float, float] = (3.0, 10.0)
 
     def is_armed(self, trap_id: str | None = None, cache_ttl_seconds: float = 10.0) -> bool:
         resolved_trap_id = (trap_id or self.trap_id).strip()
         if not resolved_trap_id:
             raise RuntimeError("TRAP_ID is required to fetch arm state")
 
-        now = time.time()
+        # キャッシュの新鮮さは経過時間の比較なので time.monotonic() を使う。
+        # RTC 無し端末で NTP 同期時に time.time() が飛ぶと、time.time() 基準では
+        # キャッシュが一気に失効/永続化しうる。
+        now = time.monotonic()
         cached = self._cached_arm_states.get(resolved_trap_id)
         if cached and now - cached[1] < cache_ttl_seconds:
             return cached[0]
 
         headers = {"x-device-token": self.device_token}
-        response = requests.get(
+        response = self._session.get(
             f"{self.api_url}/traps/{resolved_trap_id}",
             headers=headers,
-            timeout=15,
+            timeout=self._arm_timeout,
         )
         response.raise_for_status()
         body = response.json()
         is_armed = bool(body.get("is_armed", True))
-        self._cached_arm_states[resolved_trap_id] = (is_armed, now)
+        # 格納時刻はレスポンス受領後に取り直す。リクエスト開始前の時刻を使うと、
+        # 呼び出しが TTL を超えた瞬間に保存したキャッシュが失効済みになり、
+        # キャッシュが永久に効かなくなる (2026-08-08 障害の一因)。
+        self._cached_arm_states[resolved_trap_id] = (is_armed, time.monotonic())
         return is_armed
 
     def upload(
@@ -162,7 +175,7 @@ class WorkerUploader:
         resolved_filename = source_filename or os.path.basename(file_path)
         headers = {"x-device-token": self.device_token}
 
-        upload_url_resp = requests.post(
+        upload_url_resp = self._session.post(
             f"{self.api_url}/upload-url",
             headers=headers,
             json={
@@ -176,7 +189,7 @@ class WorkerUploader:
         upload_info = upload_url_resp.json()
 
         with open(file_path, "rb") as video:
-            put_resp = requests.put(
+            put_resp = self._session.put(
                 upload_info["upload_url"],
                 data=video,
                 headers={"content-type": "video/mp4"},
@@ -184,7 +197,7 @@ class WorkerUploader:
             )
         put_resp.raise_for_status()
 
-        metadata_resp = requests.post(
+        metadata_resp = self._session.post(
             f"{self.api_url}/videos",
             headers=headers,
             json={

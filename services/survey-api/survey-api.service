@@ -1,0 +1,22 @@
+[Unit]
+Description=wildlife-cam survey API (localhost:18085; expose via tailscale serve)
+Documentation=file:/home/odaijinsamax/wildlife-cam/services/survey-api/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=odaijinsamax
+WorkingDirectory=/home/odaijinsamax/wildlife-cam/services/survey-api
+ExecStart=/usr/bin/python3 /home/odaijinsamax/wildlife-cam/services/survey-api/server.py
+Restart=on-failure
+RestartSec=3
+# 127.0.0.1 固定。公開は tailscale serve の /api マウント経由のみ。
+Environment=SURVEY_API_HOST=127.0.0.1
+Environment=SURVEY_API_PORT=18085
+# /api/fullscan は carrier-scan.sh (root 必須) を sudo -n で起動する。
+# 下記 sudoers を入れておくこと (README「デプロイ」参照):
+#   odaijinsamax ALL=(root) NOPASSWD: /home/odaijinsamax/wildlife-cam/scripts/carrier-scan.sh
+
+[Install]
+WantedBy=multi-user.target

@@ -1,13 +1,24 @@
 import os
+import re
 import time
 from datetime import datetime
 
 from app_paths import get_videos_dir
+from arm_monitor import ArmStateMonitor
 from camera import WildlifeCamera
 from illuminator import Illuminator
 from link import ChildLinkClient, ParentLinkServer, apply_timestamp
 from sensor import MotionSensor
+from field_limits import FieldLimiter, on_lte
 from uploader import DriveUploader, WorkerUploader
+from video_storage import (
+    clear_retry,
+    enforce_limits,
+    looks_like_mp4,
+    quarantine,
+    record_retry,
+)
+from watchdog import mark_progress
 
 
 def create_uploader(log, *, require_trap_id: bool = True):
@@ -41,29 +52,48 @@ def _captured_at_from_path(file_path: str) -> str:
     命名規則から読めなければファイルの更新時刻で代替する。
     """
     name = os.path.basename(file_path)
-    stem = os.path.splitext(name)[0]
-    parts = stem.split("_")
-    if len(parts) >= 3:
+    match = re.search(r"(?:^|_)(\d{8})_(\d{6})(?:_|\.|$)", name)
+    if match:
         try:
-            dt = datetime.strptime(f"{parts[-2]}_{parts[-1]}", "%Y%m%d_%H%M%S")
+            dt = datetime.strptime(f"{match.group(1)}_{match.group(2)}", "%Y%m%d_%H%M%S")
             return dt.astimezone().isoformat()
         except ValueError:
             pass
     return datetime.fromtimestamp(os.path.getmtime(file_path)).astimezone().isoformat()
 
 
-def drain_pending_clips(log, uploader, *, skip_newer_than: float = 60.0, limit: int = 5) -> int:
+def drain_pending_clips(
+    log,
+    uploader,
+    *,
+    skip_newer_than: float = 60.0,
+    limit: int = 5,
+    limiter: FieldLimiter | None = None,
+    is_lte: bool = False,
+) -> int:
     """videos/ に取り残されたクリップを送信して回収する。
 
-    強制終了・電源断・送信失敗で残ったファイルは、これまで誰も拾わなかった。
+    強制終了・電源断・送信失敗・送信予算切れで残ったファイルは、これまで誰も拾わなかった。
     起動時とループ先頭で呼ぶことで、撮り逃しを防ぐ。
 
     skip_newer_than: 直近に更新されたファイルは録画中の可能性があるため触らない。
     limit: 1回の呼び出しで送る上限。溜まっていてもモーション検知を長時間止めない。
+    limiter/is_lte: LTE 送信予算のゲートと送信量カウントに使う。
+
+    送信順序: 通常はバックログ解消のため古い順。ただしバックログが閾値を超えたら
+    「新しい順」に切り替える。予算上限でバックログが膨らんだとき、実演で見せたい
+    「いま撮れた最新の動画」が古い山の後ろに埋もれないようにするため（設計判断は docs 参照）。
     """
     videos_dir = get_videos_dir()
     if not os.path.isdir(videos_dir):
         return 0
+
+    # 保留中クリップの保護と SD 保護の優先順位:
+    #   enforce_limits は SD を守るため古い順に削除しうる。送信予算で保留中の動画も
+    #   対象になりうるが、予算は最長でも約1時間の遅延にすぎず、既定の保存期間(14日)を
+    #   はるかに下回るので通常は消えない。SD が本当に逼迫した場合のみ、端末保護(録画継続)を
+    #   優先して古い順に削除する（削除は必ずログに残る。黙って消さない）。
+    enforce_limits(log, videos_dir)
 
     now = time.time()
     pending = []
@@ -83,6 +113,12 @@ def drain_pending_clips(log, uploader, *, skip_newer_than: float = 60.0, limit: 
             except OSError:
                 pass
             continue
+        if not looks_like_mp4(path):
+            try:
+                quarantine(log, path, "MP4 header check failed")
+            except OSError as exc:
+                log.warning("Could not quarantine invalid clip %s: %s", path, exc)
+            continue
         if now - stat.st_mtime < skip_newer_than:
             continue
         pending.append((stat.st_mtime, path))
@@ -90,26 +126,56 @@ def drain_pending_clips(log, uploader, *, skip_newer_than: float = 60.0, limit: 
     if not pending:
         return 0
 
-    pending.sort()
-    log.info("Found %d pending clip(s) to retry", len(pending))
+    pending.sort()  # 既定は古い順
+    if limiter is not None and limiter.prefer_newest_first(len(pending)):
+        pending.reverse()  # バックログ過多時は新しい順
+        log.info("Backlog %d clip(s) -- draining newest-first", len(pending))
+    else:
+        log.info("Found %d pending clip(s) to retry", len(pending))
 
     sent = 0
     for _, path in pending[:limit]:
+        # 送信予算切れ(LTE時)ならこの回は送らず SD に残す。失敗としては数えない。
+        if limiter is not None and limiter.upload_blocked_by_budget(is_lte):
+            limiter.note_budget_log()
+            break
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            size = 0
         try:
             ok = uploader.upload(path, captured_at=_captured_at_from_path(path))
         except Exception as exc:
             log.warning("Retry upload raised for %s: %s", path, exc)
-            continue
+            ok = False
         if ok:
+            if limiter is not None:
+                limiter.note_uploaded(size, is_lte)
             try:
                 os.remove(path)
             except OSError:
                 pass
             log.info("Retry upload OK, local file deleted: %s", path)
+            clear_retry(path)
             sent += 1
         else:
-            log.warning("Retry upload still failing, keeping: %s", path)
-            # 1件失敗したら通信側の問題とみなし、残りは次回に回す。
+            max_retries = max(1, int(os.getenv("WILDLIFE_UPLOAD_MAX_RETRIES", "3")))
+            retries = record_retry(path)
+            if retries >= max_retries:
+                try:
+                    quarantine(log, path, f"upload failed {retries} times")
+                except OSError as exc:
+                    log.warning("Could not quarantine failed clip %s: %s", path, exc)
+                    break
+                # 恒久的に失敗する1本で後続を止めない。
+                continue
+            log.warning(
+                "Retry upload still failing (%d/%d), keeping: %s",
+                retries,
+                max_retries,
+                path,
+            )
+            # 多数同時失敗は通信断とみなし、この回はここで止める。
             break
 
     remaining = len(pending) - sent
@@ -124,6 +190,8 @@ def run_standalone(log):
     illuminator = Illuminator()
     uploader = create_uploader(log)
     was_armed = None
+    limiter = FieldLimiter(log)
+    enforce_limits(log, get_videos_dir())
 
     # 安全思想「通信断=保留(作動しない)」は WorkerUploader 経路でしか成立しない。
     # 設定不備で DriveUploader に落ちると arm ゲートが消え、無条件に撮影し続ける。
@@ -141,50 +209,63 @@ def run_standalone(log):
                 "Fix config/.env, or set WILDLIFE_REQUIRE_ARM_GATE=0 to run without it."
             )
 
+    # arm 状態は背景スレッドで定期取得し、検知ループはメモリ値だけを読む。
+    # 待機ループから毎回ブロッキング HTTP を呼ぶと、LTE で v6 がブラックホール化した
+    # 際に 1 周が最長 30 秒ブロックし、PIR サンプリング周期が壊れて sustained motion が
+    # 成立しなくなる (2026-08-08 障害)。通信断=保留の安全思想は monitor 側で維持する。
+    arm_monitor = (
+        ArmStateMonitor(uploader, log=log)
+        if isinstance(uploader, WorkerUploader)
+        else None
+    )
+    if arm_monitor is not None:
+        arm_monitor.start()
+
     # 前回の稼働で取り残されたクリップを先に回収する。
     # 電源断や強制終了で残ったファイルは、これまで永久に放置されていた。
     try:
-        drain_pending_clips(log, uploader, skip_newer_than=0.0)
+        drain_pending_clips(log, uploader, skip_newer_than=0.0, limiter=limiter, is_lte=on_lte())
     except Exception:
         log.exception("Startup drain failed - continuing anyway")
 
     try:
         while True:
+            mark_progress()
+            limiter.maybe_resume_breaker()
+            lte = on_lte()
             try:
-                drain_pending_clips(log, uploader)
+                drain_pending_clips(log, uploader, limiter=limiter, is_lte=lte)
             except Exception:
                 log.exception("Pending clip drain failed - continuing anyway")
 
-            if isinstance(uploader, WorkerUploader):
-                try:
-                    is_armed = uploader.is_armed()
-                    if is_armed != was_armed:
-                        if is_armed:
-                            log.info("Trap %s is armed -- resuming motion detection", uploader.trap_id)
-                        else:
-                            log.info("Trap %s is disarmed -- skipping motion detection", uploader.trap_id)
-                        was_armed = is_armed
+            if arm_monitor is not None:
+                # 背景スレッドが更新したメモリ値のみを読む。ここでは通信しない。
+                arm_state = arm_monitor.state()
+                is_armed = arm_state == "armed"
+                if is_armed != was_armed:
+                    if is_armed:
+                        log.info("Trap %s is armed -- resuming motion detection", uploader.trap_id)
+                    else:
+                        log.info("Trap %s is disarmed -- skipping motion detection", uploader.trap_id)
+                    was_armed = is_armed
 
-                    if not is_armed:
-                        time.sleep(5)
-                        continue
-                except Exception as exc:
-                    log.warning("Failed to fetch trap arm state: %s", exc)
+                if not is_armed:
+                    # サーバが disarmed と応えた場合と、通信断/起動直後で保留の場合を
+                    # 現地表示に区別して出す (どちらも作動はしない=安全側)。
+                    status = "disarmed" if arm_state == "disarmed" else "comms_loss"
+                    limiter.write_status(status, lte)
+                    mark_progress()
                     time.sleep(5)
                     continue
 
-                # PIR待機中も定期的に arm 状態を問い合わせるが、その最中に
-                # LTE が切れると requests の例外がここまで素通りし、
-                # main.py は KeyboardInterrupt しか捕まえないためプロセスが落ちる。
-                # 屋久島では通信断が常態なので、例外は待機の中断として扱い、
-                # ループ先頭の通信断ハンドリング(=保留)に戻す。
+                # 待機中の arm 確認はメモリ読みのみ。ブロッキング HTTP を呼ばないので
+                # PIR サンプリング周期 (0.1s) が保たれる。通信断で状態が古くなれば
+                # monitor.is_armed() が False を返し、待機を中断して保留に戻す。
                 def _armed_or_pause() -> bool:
-                    try:
-                        return uploader.is_armed()
-                    except Exception as exc:
-                        log.warning("Arm check failed while waiting for motion: %s", exc)
-                        return False
+                    mark_progress()
+                    return arm_monitor.is_armed()
 
+                limiter.write_status("armed_idle", lte)
                 motion_detected = motion_sensor.wait_for_sustained_motion(
                     1.0,
                     should_continue=_armed_or_pause,
@@ -197,7 +278,21 @@ def run_standalone(log):
             else:
                 motion_sensor.wait_for_sustained_motion(1.0)
 
+            # 撮影ゲート(既定では無効。クールダウン>0 かブレーカー有効時のみ効く)。
+            # 既定方針は「撮影を絞らない」なので通常はここを素通りする。
+            block = limiter.record_block_reason()
+            if block is not None:
+                limiter.note_skip(block)
+                limiter.write_status(block, lte)
+                time.sleep(2)
+                continue
+
             log.info("Motion detected -- starting recording")
+
+            if not enforce_limits(log, get_videos_dir()):
+                mark_progress()
+                time.sleep(30)
+                continue
 
             # 夜間は IR 投光器を点けたまま録画する。投光器側の光量センサーが
             # 明るい場所では点灯を抑えるので、昼夜の判定はソフトに持たない。
@@ -208,9 +303,27 @@ def run_standalone(log):
                 time.sleep(1)
                 continue
             log.info("Recording complete: %s", file_path)
+            limiter.note_recording()
+            mark_progress()
 
+            # LTE 送信予算を超えていたら、この新しい1本も送らず SD に残す。
+            # 録画は止めない。予算回復後、drain 側が(バックログ過多なら新しい順で)送る。
+            if limiter.upload_blocked_by_budget(lte):
+                limiter.note_budget_log()
+                limiter.write_status("upload_paused", lte)
+                log.info("Upload budget reached -- keeping clip on SD: %s", file_path)
+                time.sleep(0.5)
+                continue
+
+            try:
+                size = os.path.getsize(file_path)
+            except OSError:
+                size = 0
+            limiter.write_status("recording", lte)
             success = uploader.upload(file_path)
+            mark_progress()
             if success:
+                limiter.note_uploaded(size, lte)
                 os.remove(file_path)
                 log.info("Upload OK, local file deleted: %s", file_path)
             else:
@@ -218,6 +331,11 @@ def run_standalone(log):
 
             time.sleep(0.5)
     finally:
+        if arm_monitor is not None:
+            try:
+                arm_monitor.stop()
+            except Exception:
+                log.exception("Arm monitor stop failed")
         try:
             illuminator.close()
         except Exception:
@@ -241,36 +359,34 @@ def run_child(log):
     arm_state_client = create_uploader(log)
     was_armed = None
 
+    # 子機も arm 確認を背景スレッドに追い出し、待機ループはメモリ値のみ読む。
+    # arm の取得元は Worker 直 (WorkerUploader) か親機経由 (ChildLinkClient)。
+    # どちらも .is_armed() を持つ。通信断=保留は monitor 側で担保する。
+    arm_source = (
+        arm_state_client
+        if isinstance(arm_state_client, WorkerUploader)
+        else link_client
+    )
+    arm_monitor = ArmStateMonitor(arm_source, log=log)
+    arm_monitor.start()
+
     try:
         while True:
-            try:
-                is_armed = (
-                    arm_state_client.is_armed()
-                    if isinstance(arm_state_client, WorkerUploader)
-                    else link_client.is_armed()
-                )
-                if is_armed != was_armed:
-                    if is_armed:
-                        log.info("Trap %s is armed -- resuming motion detection", trap_id)
-                    else:
-                        log.info("Trap %s is disarmed -- skipping motion detection", trap_id)
-                    was_armed = is_armed
+            is_armed = arm_monitor.is_armed()
+            if is_armed != was_armed:
+                if is_armed:
+                    log.info("Trap %s is armed -- resuming motion detection", trap_id)
+                else:
+                    log.info("Trap %s is disarmed -- skipping motion detection", trap_id)
+                was_armed = is_armed
 
-                if not is_armed:
-                    time.sleep(5)
-                    continue
-            except Exception as exc:
-                log.warning("Failed to fetch arm state: %s", exc)
+            if not is_armed:
                 time.sleep(5)
                 continue
 
             motion_detected = motion_sensor.wait_for_sustained_motion(
                 1.0,
-                should_continue=(
-                    arm_state_client.is_armed
-                    if isinstance(arm_state_client, WorkerUploader)
-                    else link_client.is_armed
-                ),
+                should_continue=arm_monitor.is_armed,
             )
             if not motion_detected:
                 if was_armed is not False:
@@ -301,6 +417,10 @@ def run_child(log):
 
             time.sleep(0.5)
     finally:
+        try:
+            arm_monitor.stop()
+        except Exception:
+            log.exception("Arm monitor stop failed")
         try:
             illuminator.close()
         except Exception:
