@@ -50,6 +50,13 @@ RECORD_SECONDS_MAX = 120
 RECORD_SECONDS_DEFAULT = 10
 COOLDOWN_SECONDS_MAX = 86400
 
+# PIR 持続判定(秒)。「この秒数 HIGH が続いて初めて検知」とする誤検知フィルタ。
+# 上限 10 秒: HC-SR501 は H モードでも動体停止から Tx 秒で LOW に戻るため、
+# これ以上は本物の動物でも成立しにくい。
+MOTION_SUSTAIN_MIN = 0.5
+MOTION_SUSTAIN_MAX = 10.0
+MOTION_SUSTAIN_DEFAULT = 1.0
+
 
 def _env_seconds(name: str, default: int) -> int:
     try:
@@ -87,6 +94,28 @@ def resolve_cooldown_seconds(trap_config: dict, env_fallback: int) -> int:
         return min(max(int(value), 0), COOLDOWN_SECONDS_MAX)
     except (TypeError, ValueError):
         return env_fallback
+
+
+def resolve_motion_sustain_seconds(trap_config: dict) -> float:
+    """PIR 持続判定(秒)。サーバ設定 → 環境変数 → 既定 1.0 の順で解決する。
+
+    誤検知(風・熱源のゆらぎ)対策で「3 秒動き続けたものだけ検知」等に上げられる。
+    注意: HC-SR501 の H モードでは出力 HIGH が「動体あり + Tx(遅延つまみ)」の間
+    続くため、Tx が持続判定より長いと一瞬の動きでも判定を通ってしまう。
+    ソフト側の値は Tx を最小に絞ってあることが前提 (現地調整手順は docs 参照)。
+    """
+    value = trap_config.get("motion_sustain_seconds")
+    if value is None:
+        raw = os.getenv("WILDLIFE_MOTION_SUSTAIN_SEC", "").strip()
+        try:
+            value = float(raw) if raw else MOTION_SUSTAIN_DEFAULT
+        except ValueError:
+            value = MOTION_SUSTAIN_DEFAULT
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        value = MOTION_SUSTAIN_DEFAULT
+    return min(max(value, MOTION_SUSTAIN_MIN), MOTION_SUSTAIN_MAX)
 
 
 def _captured_at_from_path(file_path: str) -> str:
@@ -274,7 +303,7 @@ def run_standalone(log):
         log.exception("Startup drain failed - continuing anyway")
 
     env_cooldown = limiter.cooldown_sec  # .env 由来のフォールバック値を保持
-    applied_config: tuple[int, int] | None = None
+    applied_config: tuple[int, int, float] | None = None
 
     try:
         while True:
@@ -286,17 +315,21 @@ def run_standalone(log):
             # メモリ値を読むだけで通信はしない。値が変わったときだけログに残す。
             trap_config = uploader.trap_config() if isinstance(uploader, WorkerUploader) else {}
             record_seconds = resolve_record_seconds(trap_config)
+            sustain_seconds = resolve_motion_sustain_seconds(trap_config)
             limiter.cooldown_sec = resolve_cooldown_seconds(trap_config, env_cooldown)
-            if applied_config != (record_seconds, limiter.cooldown_sec):
+            if applied_config != (record_seconds, limiter.cooldown_sec, sustain_seconds):
                 log.info(
-                    "Recording config: duration=%ds interval=%ds (server=%s)",
+                    "Recording config: duration=%ds interval=%ds sustain=%.1fs (server=%s)",
                     record_seconds,
                     limiter.cooldown_sec,
-                    "yes" if trap_config.get("record_seconds") is not None
-                    or trap_config.get("cooldown_seconds") is not None
+                    sustain_seconds,
+                    "yes" if any(
+                        trap_config.get(k) is not None
+                        for k in ("record_seconds", "cooldown_seconds", "motion_sustain_seconds")
+                    )
                     else "env/default",
                 )
-                applied_config = (record_seconds, limiter.cooldown_sec)
+                applied_config = (record_seconds, limiter.cooldown_sec, sustain_seconds)
             try:
                 drain_pending_clips(log, uploader, limiter=limiter, is_lte=lte)
             except Exception:
@@ -331,7 +364,7 @@ def run_standalone(log):
 
                 limiter.write_status("armed_idle", lte)
                 motion_detected = motion_sensor.wait_for_sustained_motion(
-                    1.0,
+                    sustain_seconds,
                     should_continue=_armed_or_pause,
                 )
                 if not motion_detected:
@@ -340,7 +373,7 @@ def run_standalone(log):
                         was_armed = False
                     continue
             else:
-                motion_sensor.wait_for_sustained_motion(1.0)
+                motion_sensor.wait_for_sustained_motion(sustain_seconds)
 
             # 撮影ゲート(既定では無効。クールダウン>0 かブレーカー有効時のみ効く)。
             # 既定方針は「撮影を絞らない」なので通常はここを素通りする。
@@ -449,7 +482,11 @@ def run_child(log):
                 continue
 
             motion_detected = motion_sensor.wait_for_sustained_motion(
-                1.0,
+                resolve_motion_sustain_seconds(
+                    arm_state_client.trap_config()
+                    if isinstance(arm_state_client, WorkerUploader)
+                    else {}
+                ),
                 should_continue=arm_monitor.is_armed,
             )
             if not motion_detected:

@@ -22,4 +22,5 @@ export type Trap = {
   // 録画設定 (Worker が R2 の trap-config から合成して返す)。null = デバイス既定。
   record_seconds: number | null;
   cooldown_seconds: number | null;
+  motion_sustain_seconds: number | null;
 };

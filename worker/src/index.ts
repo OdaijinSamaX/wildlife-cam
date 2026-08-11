@@ -41,10 +41,13 @@ const RECORD_SECONDS_MIN = 1;
 const RECORD_SECONDS_MAX = 120;
 const COOLDOWN_SECONDS_MIN = 0;
 const COOLDOWN_SECONDS_MAX = 86400;
+const MOTION_SUSTAIN_MIN = 0.5;
+const MOTION_SUSTAIN_MAX = 10;
 
 type TrapConfig = {
   record_seconds: number | null;
   cooldown_seconds: number | null;
+  motion_sustain_seconds: number | null;
 };
 
 export default {
@@ -181,6 +184,7 @@ async function handleTrapState(request: Request, env: Env, trapId: string): Prom
       last_seen_at: now,
       record_seconds: config.record_seconds,
       cooldown_seconds: config.cooldown_seconds,
+      motion_sustain_seconds: config.motion_sustain_seconds,
     },
     200,
     env,
@@ -205,7 +209,12 @@ async function handleTrapList(request: Request, env: Env): Promise<Response> {
   const withConfig = await Promise.all(
     rows.map(async (row) => {
       const config = await getTrapConfig(env, row.trap_id);
-      return { ...row, record_seconds: config.record_seconds, cooldown_seconds: config.cooldown_seconds };
+      return {
+        ...row,
+        record_seconds: config.record_seconds,
+        cooldown_seconds: config.cooldown_seconds,
+        motion_sustain_seconds: config.motion_sustain_seconds,
+      };
     }),
   );
 
@@ -221,10 +230,14 @@ async function handleTrapUpdate(request: Request, env: Env, trapId: string): Pro
     name?: string | null;
     record_seconds?: number | null;
     cooldown_seconds?: number | null;
+    motion_sustain_seconds?: number | null;
   }>(request);
 
   const hasArm = body.is_armed !== undefined;
-  const hasConfig = body.record_seconds !== undefined || body.cooldown_seconds !== undefined;
+  const hasConfig =
+    body.record_seconds !== undefined ||
+    body.cooldown_seconds !== undefined ||
+    body.motion_sustain_seconds !== undefined;
   if (!hasArm && !hasConfig) {
     throw new HttpError(400, "missing_update_fields");
   }
@@ -268,13 +281,24 @@ async function handleTrapUpdate(request: Request, env: Env, trapId: string): Pro
         body.cooldown_seconds !== undefined
           ? boundedIntOrNull(body.cooldown_seconds, "cooldown_seconds", COOLDOWN_SECONDS_MIN, COOLDOWN_SECONDS_MAX)
           : config.cooldown_seconds,
+      motion_sustain_seconds:
+        body.motion_sustain_seconds !== undefined
+          ? boundedFloatOrNull(body.motion_sustain_seconds, "motion_sustain_seconds", MOTION_SUSTAIN_MIN, MOTION_SUSTAIN_MAX)
+          : config.motion_sustain_seconds,
     };
     await putTrapConfig(env, trapId, config);
   }
 
   // Web は Trap[] 形状 (return=representation 互換) を期待する。
   return json(
-    [{ ...row, record_seconds: config.record_seconds, cooldown_seconds: config.cooldown_seconds }],
+    [
+      {
+        ...row,
+        record_seconds: config.record_seconds,
+        cooldown_seconds: config.cooldown_seconds,
+        motion_sustain_seconds: config.motion_sustain_seconds,
+      },
+    ],
     200,
     env,
     request.headers.get("origin"),
@@ -289,17 +313,18 @@ async function getTrapConfig(env: Env, trapId: string): Promise<TrapConfig> {
   try {
     const object = await env.VIDEOS_BUCKET.get(trapConfigKey(trapId));
     if (!object) {
-      return { record_seconds: null, cooldown_seconds: null };
+      return { record_seconds: null, cooldown_seconds: null, motion_sustain_seconds: null };
     }
     const data = JSON.parse(await object.text()) as Record<string, unknown>;
     return {
       record_seconds: silentBoundedIntOrNull(data.record_seconds, RECORD_SECONDS_MIN, RECORD_SECONDS_MAX),
       cooldown_seconds: silentBoundedIntOrNull(data.cooldown_seconds, COOLDOWN_SECONDS_MIN, COOLDOWN_SECONDS_MAX),
+      motion_sustain_seconds: silentBoundedFloatOrNull(data.motion_sustain_seconds, MOTION_SUSTAIN_MIN, MOTION_SUSTAIN_MAX),
     };
   } catch (error) {
     // 設定が壊れていても罠の稼働 (arm 判定・アップロード) は止めない。
     console.error("trap config read failed", trapId, error);
-    return { record_seconds: null, cooldown_seconds: null };
+    return { record_seconds: null, cooldown_seconds: null, motion_sustain_seconds: null };
   }
 }
 
@@ -321,6 +346,30 @@ function boundedIntOrNull(value: unknown, field: string, min: number, max: numbe
     throw new HttpError(400, `invalid_${field}`);
   }
   return num;
+}
+
+// PATCH 入力用 (小数可): 範囲外・非数は 400 で弾く。null は「デバイス既定に戻す」。
+function boundedFloatOrNull(value: unknown, field: string, min: number, max: number): number | null {
+  if (value === null) {
+    return null;
+  }
+  const num = Number(value);
+  if (!Number.isFinite(num) || num < min || num > max) {
+    throw new HttpError(400, `invalid_${field}`);
+  }
+  return Math.round(num * 10) / 10;
+}
+
+// 保存済み JSON 読み出し用 (小数可): 壊れた値は黙って null 扱いにする。
+function silentBoundedFloatOrNull(value: unknown, min: number, max: number): number | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  const num = Number(value);
+  if (!Number.isFinite(num) || num < min || num > max) {
+    return null;
+  }
+  return Math.round(num * 10) / 10;
 }
 
 // 保存済み JSON 読み出し用: 壊れた値は黙って null 扱いにする。
