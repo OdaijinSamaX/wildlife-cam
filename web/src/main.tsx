@@ -8,6 +8,10 @@ import "./styles.css";
 
 const apiBaseUrl = import.meta.env.VITE_WORKER_API_URL as string | undefined;
 
+// 屋久島フィールド投入 (2026-08-11 15:30 JST) 以降の動画は全件表示する。
+// それ以前はベンチテストの動画なので従来どおり直近だけ見えれば足りる。
+const FIELD_DEPLOY_CUTOFF = "2026-08-11T15:30:00+09:00";
+
 function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [loadingSession, setLoadingSession] = useState(true);
@@ -104,12 +108,15 @@ function VideoDashboard({ session }: { session: Session }) {
     if (videosRequestInFlight.current) return;
     videosRequestInFlight.current = true;
     try {
+      // フィールド投入以降は撮り逃しの確認が目的なので全件出す。
+      // (2000 は暴走時の安全弁。5分間隔運用なら約1週間分に相当)
       const { data, error: queryError } = await supabase
         .from("videos")
         .select("id,trap_id,captured_at,status,hunter_note,created_at")
+        .gte("captured_at", FIELD_DEPLOY_CUTOFF)
         .order("captured_at", { ascending: false })
         .order("created_at", { ascending: false })
-        .limit(100);
+        .limit(2000);
 
       if (queryError) {
         setError(queryError.message);
@@ -210,38 +217,63 @@ function VideoDashboard({ session }: { session: Session }) {
     setPlayUrl(body.play_url);
   }
 
-  async function toggleTrapArmed(trap: Trap) {
+  async function patchTrap(trap: Trap, payload: Record<string, unknown>, failMessage: string): Promise<boolean> {
     if (profile?.role !== "admin") {
-      setError("監視の切り替えは admin のみ可能です。");
-      return;
+      setError("この操作は admin のみ可能です。");
+      return false;
     }
 
     setUpdatingTrapId(trap.trap_id);
     setError(null);
 
-    const nextIsArmed = !trap.is_armed;
-    const response = await fetch(`${apiBaseUrl}/traps/${encodeURIComponent(trap.trap_id)}`, {
-      method: "PATCH",
-      headers: {
-        authorization: `Bearer ${session.access_token}`,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({
-        is_armed: nextIsArmed,
+    try {
+      const response = await fetch(`${apiBaseUrl}/traps/${encodeURIComponent(trap.trap_id)}`, {
+        method: "PATCH",
+        headers: {
+          authorization: `Bearer ${session.access_token}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        setError(failMessage);
+        return false;
+      }
+
+      const rows = (await response.json()) as Trap[];
+      if (rows[0]) {
+        setTraps((current) => current.map((row) => (row.trap_id === trap.trap_id ? rows[0] : row)));
+      }
+      return true;
+    } catch {
+      setError(failMessage);
+      return false;
+    } finally {
+      setUpdatingTrapId(null);
+    }
+  }
+
+  async function toggleTrapArmed(trap: Trap) {
+    await patchTrap(
+      trap,
+      { is_armed: !trap.is_armed, name: trap.name },
+      "監視状態を更新できませんでした。",
+    );
+  }
+
+  async function saveTrapConfig(trap: Trap, recordSeconds: number | null, cooldownSeconds: number | null) {
+    return patchTrap(
+      trap,
+      // is_armed / name は現在値を明示的に送り、設定保存が監視状態を変えないことを保証する。
+      {
+        is_armed: trap.is_armed,
         name: trap.name,
-      }),
-    });
-    setUpdatingTrapId(null);
-
-    if (!response.ok) {
-      setError("監視状態を更新できませんでした。");
-      return;
-    }
-
-    const rows = (await response.json()) as Trap[];
-    if (rows[0]) {
-      setTraps((current) => current.map((row) => (row.trap_id === trap.trap_id ? rows[0] : row)));
-    }
+        record_seconds: recordSeconds,
+        cooldown_seconds: cooldownSeconds,
+      },
+      "録画設定を更新できませんでした。",
+    );
   }
 
   return (
@@ -306,6 +338,12 @@ function VideoDashboard({ session }: { session: Session }) {
                 >
                   <span>{trap.is_armed ? "監視中" : "停止中"}</span>
                 </button>
+                <TrapConfigForm
+                  trap={trap}
+                  canEdit={profile?.role === "admin"}
+                  saving={updatingTrapId === trap.trap_id}
+                  onSave={saveTrapConfig}
+                />
               </article>
             ))}
           </div>
@@ -365,6 +403,98 @@ function VideoDashboard({ session }: { session: Session }) {
   );
 }
 
+function TrapConfigForm({
+  trap,
+  canEdit,
+  saving,
+  onSave,
+}: {
+  trap: Trap;
+  canEdit: boolean;
+  saving: boolean;
+  onSave: (trap: Trap, recordSeconds: number | null, cooldownSeconds: number | null) => Promise<boolean>;
+}) {
+  const [recordText, setRecordText] = useState(trap.record_seconds?.toString() ?? "");
+  const [cooldownText, setCooldownText] = useState(trap.cooldown_seconds?.toString() ?? "");
+  const [localError, setLocalError] = useState<string | null>(null);
+  const [savedAt, setSavedAt] = useState<number | null>(null);
+
+  // ポーリングでサーバ値が変わったら入力欄も追従させる (編集途中は上書きしない)。
+  const dirty =
+    recordText !== (trap.record_seconds?.toString() ?? "") ||
+    cooldownText !== (trap.cooldown_seconds?.toString() ?? "");
+  useEffect(() => {
+    if (!dirty) {
+      setRecordText(trap.record_seconds?.toString() ?? "");
+      setCooldownText(trap.cooldown_seconds?.toString() ?? "");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [trap.record_seconds, trap.cooldown_seconds]);
+
+  function parseField(text: string, min: number, max: number, label: string): number | null | "error" {
+    const trimmed = text.trim();
+    if (trimmed === "") return null; // 空欄 = デバイス既定に戻す
+    const num = Number(trimmed);
+    if (!Number.isFinite(num) || Math.round(num) !== num || num < min || num > max) {
+      setLocalError(`${label}は ${min}〜${max} の整数で入力してください。`);
+      return "error";
+    }
+    return num;
+  }
+
+  async function handleSubmit(event: React.FormEvent) {
+    event.preventDefault();
+    setLocalError(null);
+    const record = parseField(recordText, 1, 120, "録画時間(秒)");
+    if (record === "error") return;
+    const cooldown = parseField(cooldownText, 0, 86400, "撮影間隔(秒)");
+    if (cooldown === "error") return;
+    const ok = await onSave(trap, record, cooldown);
+    if (ok) {
+      setSavedAt(Date.now());
+      window.setTimeout(() => setSavedAt(null), 4000);
+    }
+  }
+
+  return (
+    <form className="trap-config" onSubmit={handleSubmit}>
+      <div className="trap-config-fields">
+        <label>
+          録画時間(秒)
+          <input
+            type="number"
+            inputMode="numeric"
+            min={1}
+            max={120}
+            placeholder="既定 10"
+            value={recordText}
+            onChange={(event) => setRecordText(event.target.value)}
+            disabled={!canEdit || saving}
+          />
+        </label>
+        <label>
+          撮影間隔(秒)
+          <input
+            type="number"
+            inputMode="numeric"
+            min={0}
+            max={86400}
+            placeholder="既定 0"
+            value={cooldownText}
+            onChange={(event) => setCooldownText(event.target.value)}
+            disabled={!canEdit || saving}
+          />
+        </label>
+      </div>
+      <p className="trap-config-hint">300秒=5分間隔。空欄はデバイス既定に戻します。反映まで最大約20秒。</p>
+      {localError && <p className="error">{localError}</p>}
+      <button type="submit" disabled={!canEdit || saving || !dirty}>
+        {saving ? "保存中..." : savedAt ? "保存しました" : "設定を保存"}
+      </button>
+    </form>
+  );
+}
+
 function StatusBadge({ status }: { status: Video["status"] }) {
   return <span className={`status status-${status}`}>{statusLabel(status)}</span>;
 }
@@ -388,7 +518,7 @@ function mergeVideos(current: Video[], incoming: Video[]): Video[] {
       const capturedDifference = new Date(right.captured_at).getTime() - new Date(left.captured_at).getTime();
       return capturedDifference || new Date(right.created_at).getTime() - new Date(left.created_at).getTime();
     })
-    .slice(0, 100);
+    .slice(0, 2000);
 
   if (next.length === current.length && next.every((video, index) => sameVideo(video, current[index]))) {
     return current;
@@ -414,7 +544,9 @@ function sameTraps(current: Trap[], incoming: Trap[]): boolean {
       && trap.is_armed === next.is_armed
       && trap.last_seen_at === next.last_seen_at
       && trap.updated_at === next.updated_at
-      && trap.created_at === next.created_at;
+      && trap.created_at === next.created_at
+      && trap.record_seconds === next.record_seconds
+      && trap.cooldown_seconds === next.cooldown_seconds;
   });
 }
 

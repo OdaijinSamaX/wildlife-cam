@@ -33,6 +33,20 @@ type TrapRow = {
 const TOKEN_TTL_SECONDS = 15 * 60;
 const PLAY_TTL_SECONDS = 10 * 60;
 
+// 罠ごとの録画設定。Supabase の traps に列を足すには本番 DB のマイグレーションが
+// 要るため、既存の R2 バインディングに JSON で持たせる (trap-config/<id>.json)。
+// デバイスは GET /traps/:id の応答で受け取り、Web UI は PATCH で書き換える。
+const TRAP_CONFIG_PREFIX = "trap-config/";
+const RECORD_SECONDS_MIN = 1;
+const RECORD_SECONDS_MAX = 120;
+const COOLDOWN_SECONDS_MIN = 0;
+const COOLDOWN_SECONDS_MAX = 86400;
+
+type TrapConfig = {
+  record_seconds: number | null;
+  cooldown_seconds: number | null;
+};
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -154,6 +168,7 @@ async function handleTrapState(request: Request, env: Env, trapId: string): Prom
   // 設定ミスに気づけなかった。設計思想の「既定=保留」に合わせる。
   // 新規の罠を現地投入するときは、Supabase 側で is_armed を true にすること。
   const isArmed = trap?.is_armed ?? false;
+  const config = await getTrapConfig(env, trapId);
   await upsertTrapHeartbeat(env, trapId, isArmed);
   const now = new Date().toISOString();
 
@@ -164,6 +179,8 @@ async function handleTrapState(request: Request, env: Env, trapId: string): Prom
       name: trap?.name ?? null,
       updated_at: trap?.updated_at ?? new Date().toISOString(),
       last_seen_at: now,
+      record_seconds: config.record_seconds,
+      cooldown_seconds: config.cooldown_seconds,
     },
     200,
     env,
@@ -180,29 +197,142 @@ async function handleTrapList(request: Request, env: Env): Promise<Response> {
     { method: "GET" },
   );
 
-  return corsResponse(found.body, found.status, env, getContentType(found), request.headers.get("origin"));
+  if (!found.ok) {
+    return corsResponse(found.body, found.status, env, getContentType(found), request.headers.get("origin"));
+  }
+
+  const rows = (await found.json()) as TrapRow[];
+  const withConfig = await Promise.all(
+    rows.map(async (row) => {
+      const config = await getTrapConfig(env, row.trap_id);
+      return { ...row, record_seconds: config.record_seconds, cooldown_seconds: config.cooldown_seconds };
+    }),
+  );
+
+  return json(withConfig, 200, env, request.headers.get("origin"));
 }
 
 async function handleTrapUpdate(request: Request, env: Env, trapId: string): Promise<Response> {
   const user = await requireSupabaseUser(request, env);
   await requireSupabaseAdmin(env, user.id);
 
-  const body = await readJson<{ is_armed?: boolean; name?: string | null }>(request);
-  if (typeof body.is_armed !== "boolean") {
-    throw new HttpError(400, "missing_is_armed");
+  const body = await readJson<{
+    is_armed?: boolean;
+    name?: string | null;
+    record_seconds?: number | null;
+    cooldown_seconds?: number | null;
+  }>(request);
+
+  const hasArm = body.is_armed !== undefined;
+  const hasConfig = body.record_seconds !== undefined || body.cooldown_seconds !== undefined;
+  if (!hasArm && !hasConfig) {
+    throw new HttpError(400, "missing_update_fields");
+  }
+  if (hasArm && typeof body.is_armed !== "boolean") {
+    throw new HttpError(400, "invalid_is_armed");
   }
 
-  const updated = await supabaseFetch(env, `/rest/v1/traps?trap_id=eq.${encodeURIComponent(trapId)}`, {
-    method: "PATCH",
-    headers: { Prefer: "return=representation" },
-    body: JSON.stringify({
-      is_armed: body.is_armed,
-      name: body.name ?? null,
-      updated_at: new Date().toISOString(),
-    }),
-  });
+  let row: TrapRow | null;
+  if (hasArm) {
+    // is_armed / name の更新経路は従来のまま (Supabase)。
+    const updated = await supabaseFetch(env, `/rest/v1/traps?trap_id=eq.${encodeURIComponent(trapId)}`, {
+      method: "PATCH",
+      headers: { Prefer: "return=representation" },
+      body: JSON.stringify({
+        is_armed: body.is_armed,
+        name: body.name ?? null,
+        updated_at: new Date().toISOString(),
+      }),
+    });
+    if (!updated.ok) {
+      return corsResponse(updated.body, updated.status, env, getContentType(updated), request.headers.get("origin"));
+    }
+    const rows = (await updated.json()) as TrapRow[];
+    row = rows[0] ?? null;
+  } else {
+    row = await getTrap(env, trapId);
+  }
 
-  return corsResponse(updated.body, updated.status, env, getContentType(updated), request.headers.get("origin"));
+  if (!row) {
+    throw new HttpError(404, "trap_not_found");
+  }
+
+  let config = await getTrapConfig(env, trapId);
+  if (hasConfig) {
+    config = {
+      record_seconds:
+        body.record_seconds !== undefined
+          ? boundedIntOrNull(body.record_seconds, "record_seconds", RECORD_SECONDS_MIN, RECORD_SECONDS_MAX)
+          : config.record_seconds,
+      cooldown_seconds:
+        body.cooldown_seconds !== undefined
+          ? boundedIntOrNull(body.cooldown_seconds, "cooldown_seconds", COOLDOWN_SECONDS_MIN, COOLDOWN_SECONDS_MAX)
+          : config.cooldown_seconds,
+    };
+    await putTrapConfig(env, trapId, config);
+  }
+
+  // Web は Trap[] 形状 (return=representation 互換) を期待する。
+  return json(
+    [{ ...row, record_seconds: config.record_seconds, cooldown_seconds: config.cooldown_seconds }],
+    200,
+    env,
+    request.headers.get("origin"),
+  );
+}
+
+function trapConfigKey(trapId: string): string {
+  return `${TRAP_CONFIG_PREFIX}${sanitizePathPart(trapId)}.json`;
+}
+
+async function getTrapConfig(env: Env, trapId: string): Promise<TrapConfig> {
+  try {
+    const object = await env.VIDEOS_BUCKET.get(trapConfigKey(trapId));
+    if (!object) {
+      return { record_seconds: null, cooldown_seconds: null };
+    }
+    const data = JSON.parse(await object.text()) as Record<string, unknown>;
+    return {
+      record_seconds: silentBoundedIntOrNull(data.record_seconds, RECORD_SECONDS_MIN, RECORD_SECONDS_MAX),
+      cooldown_seconds: silentBoundedIntOrNull(data.cooldown_seconds, COOLDOWN_SECONDS_MIN, COOLDOWN_SECONDS_MAX),
+    };
+  } catch (error) {
+    // 設定が壊れていても罠の稼働 (arm 判定・アップロード) は止めない。
+    console.error("trap config read failed", trapId, error);
+    return { record_seconds: null, cooldown_seconds: null };
+  }
+}
+
+async function putTrapConfig(env: Env, trapId: string, config: TrapConfig): Promise<void> {
+  await env.VIDEOS_BUCKET.put(
+    trapConfigKey(trapId),
+    JSON.stringify({ ...config, updated_at: new Date().toISOString() }),
+    { httpMetadata: { contentType: "application/json" } },
+  );
+}
+
+// PATCH 入力用: 範囲外・非数は 400 で弾く。null は「デバイス既定に戻す」。
+function boundedIntOrNull(value: unknown, field: string, min: number, max: number): number | null {
+  if (value === null) {
+    return null;
+  }
+  const num = Number(value);
+  if (!Number.isFinite(num) || Math.round(num) !== num || num < min || num > max) {
+    throw new HttpError(400, `invalid_${field}`);
+  }
+  return num;
+}
+
+// 保存済み JSON 読み出し用: 壊れた値は黙って null 扱いにする。
+function silentBoundedIntOrNull(value: unknown, min: number, max: number): number | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  const num = Number(value);
+  if (!Number.isFinite(num) || num < min || num > max) {
+    return null;
+  }
+  return Math.round(num);
 }
 
 async function handlePlayUrl(request: Request, env: Env, videoId: string): Promise<Response> {
