@@ -197,7 +197,10 @@ input {
 }
 
 .trap-config {
-  flex-basis: 100%;
+  /* 横並び時は自分の行へ折り返し、縦並び(スマホ)時は全幅になる。
+     flex-basis: 100% だと column 方向で「高さ100%」と解釈され、
+     フォームが横の新しい列に折り返されて画面外へ溢れる (実機で再現済み)。 */
+  width: 100%;
   display: grid;
   gap: 8px;
   padding-top: 12px;
@@ -223,7 +226,8 @@ input {
   padding: 8px 10px;
   border: 1px solid #cbd5cd;
   border-radius: 6px;
-  font-size: 15px;
+  /* 16px 未満だと iOS Safari がフォーカス時に画面ごとズームする */
+  font-size: 16px;
 }
 
 .trap-config-hint {
