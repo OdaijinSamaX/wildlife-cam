@@ -262,7 +262,7 @@ function VideoDashboard({ session }: { session: Session }) {
     );
   }
 
-  async function saveTrapConfig(trap: Trap, recordSeconds: number | null, cooldownSeconds: number | null) {
+  async function saveTrapConfig(trap: Trap, recordSeconds: number | null, cooldownSeconds: number | null, sustainSeconds: number | null) {
     return patchTrap(
       trap,
       // is_armed / name は現在値を明示的に送り、設定保存が監視状態を変えないことを保証する。
@@ -271,6 +271,7 @@ function VideoDashboard({ session }: { session: Session }) {
         name: trap.name,
         record_seconds: recordSeconds,
         cooldown_seconds: cooldownSeconds,
+        motion_sustain_seconds: sustainSeconds,
       },
       "録画設定を更新できませんでした。",
     );
@@ -412,31 +413,35 @@ function TrapConfigForm({
   trap: Trap;
   canEdit: boolean;
   saving: boolean;
-  onSave: (trap: Trap, recordSeconds: number | null, cooldownSeconds: number | null) => Promise<boolean>;
+  onSave: (trap: Trap, recordSeconds: number | null, cooldownSeconds: number | null, sustainSeconds: number | null) => Promise<boolean>;
 }) {
   const [recordText, setRecordText] = useState(trap.record_seconds?.toString() ?? "");
   const [cooldownText, setCooldownText] = useState(trap.cooldown_seconds?.toString() ?? "");
+  const [sustainText, setSustainText] = useState(trap.motion_sustain_seconds?.toString() ?? "");
   const [localError, setLocalError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
 
   // ポーリングでサーバ値が変わったら入力欄も追従させる (編集途中は上書きしない)。
   const dirty =
     recordText !== (trap.record_seconds?.toString() ?? "") ||
-    cooldownText !== (trap.cooldown_seconds?.toString() ?? "");
+    cooldownText !== (trap.cooldown_seconds?.toString() ?? "") ||
+    sustainText !== (trap.motion_sustain_seconds?.toString() ?? "");
   useEffect(() => {
     if (!dirty) {
       setRecordText(trap.record_seconds?.toString() ?? "");
       setCooldownText(trap.cooldown_seconds?.toString() ?? "");
+      setSustainText(trap.motion_sustain_seconds?.toString() ?? "");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [trap.record_seconds, trap.cooldown_seconds]);
+  }, [trap.record_seconds, trap.cooldown_seconds, trap.motion_sustain_seconds]);
 
-  function parseField(text: string, min: number, max: number, label: string): number | null | "error" {
+  function parseField(text: string, min: number, max: number, label: string, allowDecimal = false): number | null | "error" {
     const trimmed = text.trim();
     if (trimmed === "") return null; // 空欄 = デバイス既定に戻す
     const num = Number(trimmed);
-    if (!Number.isFinite(num) || Math.round(num) !== num || num < min || num > max) {
-      setLocalError(`${label}は ${min}〜${max} の整数で入力してください。`);
+    const integerOk = allowDecimal || Math.round(num) === num;
+    if (!Number.isFinite(num) || !integerOk || num < min || num > max) {
+      setLocalError(`${label}は ${min}〜${max} の${allowDecimal ? "数値" : "整数"}で入力してください。`);
       return "error";
     }
     return num;
@@ -449,7 +454,9 @@ function TrapConfigForm({
     if (record === "error") return;
     const cooldown = parseField(cooldownText, 0, 86400, "撮影間隔(秒)");
     if (cooldown === "error") return;
-    const ok = await onSave(trap, record, cooldown);
+    const sustain = parseField(sustainText, 0.5, 10, "検知持続(秒)", true);
+    if (sustain === "error") return;
+    const ok = await onSave(trap, record, cooldown, sustain);
     if (ok) {
       setSavedAt(Date.now());
       window.setTimeout(() => setSavedAt(null), 4000);
@@ -485,8 +492,22 @@ function TrapConfigForm({
             disabled={!canEdit || saving}
           />
         </label>
+        <label>
+          検知持続(秒)
+          <input
+            type="number"
+            inputMode="decimal"
+            min={0.5}
+            max={10}
+            step={0.5}
+            placeholder="既定 1"
+            value={sustainText}
+            onChange={(event) => setSustainText(event.target.value)}
+            disabled={!canEdit || saving}
+          />
+        </label>
       </div>
-      <p className="trap-config-hint">300秒=5分間隔。空欄はデバイス既定に戻します。反映まで最大約20秒。</p>
+      <p className="trap-config-hint">300秒=5分間隔。検知持続=この秒数動き続けた物だけ検知(誤検知対策)。空欄はデバイス既定。反映まで最大約20秒。</p>
       {localError && <p className="error">{localError}</p>}
       <button type="submit" disabled={!canEdit || saving || !dirty}>
         {saving ? "保存中..." : savedAt ? "保存しました" : "設定を保存"}

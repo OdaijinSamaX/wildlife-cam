@@ -119,6 +119,7 @@ class WorkerUploader:
         self._last_trap_config = {
             "record_seconds": body.get("record_seconds"),
             "cooldown_seconds": body.get("cooldown_seconds"),
+            "motion_sustain_seconds": body.get("motion_sustain_seconds"),
         }
         # 格納時刻はレスポンス受領後に取り直す。リクエスト開始前の時刻を使うと、
         # 呼び出しが TTL を超えた瞬間に保存したキャッシュが失効済みになり、
