@@ -188,11 +188,62 @@ input {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 16px;
   padding: 14px;
   border: 1px solid #edf1ee;
   border-radius: 8px;
   background: #f9fbf8;
+}
+
+.trap-config {
+  flex-basis: 100%;
+  display: grid;
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 1px dashed #dce4dc;
+}
+
+.trap-config-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.trap-config-fields label {
+  display: grid;
+  gap: 4px;
+  font-size: 13px;
+  color: #45514a;
+  font-weight: 600;
+}
+
+.trap-config-fields input {
+  width: 130px;
+  padding: 8px 10px;
+  border: 1px solid #cbd5cd;
+  border-radius: 6px;
+  font-size: 15px;
+}
+
+.trap-config-hint {
+  margin: 0;
+  font-size: 12px;
+  color: #68756d;
+}
+
+.trap-config button {
+  justify-self: start;
+  border: 0;
+  border-radius: 6px;
+  padding: 8px 18px;
+  background: #29583b;
+  color: #fff;
+  font-weight: 700;
+}
+
+.trap-config button:disabled {
+  opacity: 0.55;
 }
 
 .trap-id {

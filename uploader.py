@@ -81,6 +81,10 @@ class WorkerUploader:
         self.trap_id = trap_id.strip()
         self._log = logging.getLogger("wildlife_cam")
         self._cached_arm_states: dict[str, tuple[bool, float]] = {}
+        # 直近の /traps/:id 応答から得た録画設定 (record_seconds / cooldown_seconds)。
+        # arm ポーリング (ArmStateMonitor 経由) のついでに更新され、検知ループが
+        # trap_config() で参照する。dict の差し替えは GIL 下で原子的。
+        self._last_trap_config: dict = {}
         # LTE では毎回の TCP/TLS ハンドシェイクが高くつくので接続を使い回す。
         self._session = requests.Session()
         # arm 確認の timeout は (connect, read) タプルで短く固定する。
@@ -111,11 +115,20 @@ class WorkerUploader:
         response.raise_for_status()
         body = response.json()
         is_armed = bool(body.get("is_armed", True))
+        # 録画設定は arm ポーリングに同乗して届く。応答に無いキーは None (未設定) 扱い。
+        self._last_trap_config = {
+            "record_seconds": body.get("record_seconds"),
+            "cooldown_seconds": body.get("cooldown_seconds"),
+        }
         # 格納時刻はレスポンス受領後に取り直す。リクエスト開始前の時刻を使うと、
         # 呼び出しが TTL を超えた瞬間に保存したキャッシュが失効済みになり、
         # キャッシュが永久に効かなくなる (2026-08-08 障害の一因)。
         self._cached_arm_states[resolved_trap_id] = (is_armed, time.monotonic())
         return is_armed
+
+    def trap_config(self) -> dict:
+        """直近の /traps/:id 応答から得た録画設定。未取得なら空 dict を返す。"""
+        return dict(self._last_trap_config)
 
     def upload(
         self,

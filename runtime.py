@@ -44,6 +44,51 @@ def get_node_role() -> str:
     return role or "standalone"
 
 
+# 録画時間の安全範囲。上限は Zero 2 W の実メモリと送信予算から置いた保守値。
+RECORD_SECONDS_MIN = 1
+RECORD_SECONDS_MAX = 120
+RECORD_SECONDS_DEFAULT = 10
+COOLDOWN_SECONDS_MAX = 86400
+
+
+def _env_seconds(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, "").strip() or default)
+    except ValueError:
+        return default
+
+
+def resolve_record_seconds(trap_config: dict) -> int:
+    """1回あたりの録画時間(秒)。サーバ設定 → 環境変数 → 既定 の順で解決する。
+
+    サーバ値が null (未設定) のときだけ環境変数へフォールバックする。
+    通信断でも直近に取得済みのサーバ値が trap_config に残るため、現地で
+    Web 側の設定が生きたまま動き続ける。
+    """
+    value = trap_config.get("record_seconds")
+    if value is None:
+        value = _env_seconds("WILDLIFE_RECORD_SECONDS", RECORD_SECONDS_DEFAULT)
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        value = RECORD_SECONDS_DEFAULT
+    return min(max(value, RECORD_SECONDS_MIN), RECORD_SECONDS_MAX)
+
+
+def resolve_cooldown_seconds(trap_config: dict, env_fallback: int) -> int:
+    """撮影間隔(秒)。サーバ設定 → 環境変数(FieldLimiter初期値) の順で解決する。
+
+    0 は「間隔制限なし」の正当な値なので、null (未設定) とは区別する。
+    """
+    value = trap_config.get("cooldown_seconds")
+    if value is None:
+        return env_fallback
+    try:
+        return min(max(int(value), 0), COOLDOWN_SECONDS_MAX)
+    except (TypeError, ValueError):
+        return env_fallback
+
+
 def _captured_at_from_path(file_path: str) -> str:
     """clip_YYYYMMDD_HHMMSS.mp4 から撮影時刻を復元する。
 
@@ -228,11 +273,30 @@ def run_standalone(log):
     except Exception:
         log.exception("Startup drain failed - continuing anyway")
 
+    env_cooldown = limiter.cooldown_sec  # .env 由来のフォールバック値を保持
+    applied_config: tuple[int, int] | None = None
+
     try:
         while True:
             mark_progress()
             limiter.maybe_resume_breaker()
             lte = on_lte()
+
+            # Web UI からの録画設定 (arm ポーリングに同乗して届く) を反映する。
+            # メモリ値を読むだけで通信はしない。値が変わったときだけログに残す。
+            trap_config = uploader.trap_config() if isinstance(uploader, WorkerUploader) else {}
+            record_seconds = resolve_record_seconds(trap_config)
+            limiter.cooldown_sec = resolve_cooldown_seconds(trap_config, env_cooldown)
+            if applied_config != (record_seconds, limiter.cooldown_sec):
+                log.info(
+                    "Recording config: duration=%ds interval=%ds (server=%s)",
+                    record_seconds,
+                    limiter.cooldown_sec,
+                    "yes" if trap_config.get("record_seconds") is not None
+                    or trap_config.get("cooldown_seconds") is not None
+                    else "env/default",
+                )
+                applied_config = (record_seconds, limiter.cooldown_sec)
             try:
                 drain_pending_clips(log, uploader, limiter=limiter, is_lte=lte)
             except Exception:
@@ -297,7 +361,7 @@ def run_standalone(log):
             # 夜間は IR 投光器を点けたまま録画する。投光器側の光量センサーが
             # 明るい場所では点灯を抑えるので、昼夜の判定はソフトに持たない。
             with illuminator.lit():
-                file_path = camera.record_clip(get_videos_dir(), 10)
+                file_path = camera.record_clip(get_videos_dir(), record_seconds)
             if not file_path:
                 log.warning("Recording returned no file path")
                 time.sleep(1)
@@ -395,8 +459,13 @@ def run_child(log):
                 continue
 
             log.info("Motion detected on child node -- starting recording")
+            trap_config = (
+                arm_state_client.trap_config()
+                if isinstance(arm_state_client, WorkerUploader)
+                else {}
+            )
             with illuminator.lit():
-                file_path = camera.record_clip(get_videos_dir(), 10)
+                file_path = camera.record_clip(get_videos_dir(), resolve_record_seconds(trap_config))
             if not file_path:
                 log.warning("Recording returned no file path")
                 time.sleep(1)

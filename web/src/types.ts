@@ -19,4 +19,7 @@ export type Trap = {
   last_seen_at: string | null;
   updated_at: string;
   created_at: string;
+  // 録画設定 (Worker が R2 の trap-config から合成して返す)。null = デバイス既定。
+  record_seconds: number | null;
+  cooldown_seconds: number | null;
 };
