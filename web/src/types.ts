@@ -24,3 +24,14 @@ export type Trap = {
   cooldown_seconds: number | null;
   motion_sustain_seconds: number | null;
 };
+
+export type AgentMessage = {
+  id: string;
+  trap_id: string;
+  role: "user" | "agent";
+  author_email: string | null;
+  content: string;
+  status: "pending" | "answered";
+  reply_to: string | null;
+  created_at: string;
+};

@@ -71,6 +71,14 @@ export default {
         return await handleCreateVideo(request, env);
       }
 
+      if (request.method === "GET" && url.pathname === "/agent/inbox") {
+        return await handleAgentInbox(request, env, url);
+      }
+
+      if (request.method === "POST" && url.pathname === "/agent/replies") {
+        return await handleAgentReply(request, env);
+      }
+
       const trapMatch = url.pathname.match(/^\/traps\/([^/]+)$/);
       if (request.method === "GET" && url.pathname === "/traps") {
         return await handleTrapList(request, env);
@@ -504,6 +512,91 @@ async function requireSupabaseAdmin(env: Env, userId: string): Promise<void> {
   if (rows[0]?.role !== "admin") {
     throw new HttpError(403, "admin_required");
   }
+}
+
+// ================= エージェントチャット (Web=読み取り専用窓口) =================
+// Web 側は Supabase RLS 経由で投稿/閲覧する。Worker が持つのはデバイス側の2本のみ:
+//   GET  /agent/inbox   — Pi が未回答の質問を取りに来る (device token)
+//   POST /agent/replies — Pi (ZeroClaw) が回答を置きに来る (device token)
+// 操作系のエンドポイントは設計判断として存在しない (操作は Telegram 経路のみ)。
+
+type AgentMessageRow = {
+  id: string;
+  trap_id: string;
+  role: string;
+  author_email: string | null;
+  content: string;
+  status: string;
+  created_at: string;
+};
+
+async function handleAgentInbox(request: Request, env: Env, url: URL): Promise<Response> {
+  requireDeviceToken(request, env);
+  const trapId = requireText(url.searchParams.get("trap_id"), "trap_id");
+
+  const found = await supabaseFetch(
+    env,
+    `/rest/v1/agent_messages?trap_id=eq.${encodeURIComponent(trapId)}&role=eq.user&status=eq.pending&select=id,trap_id,role,author_email,content,status,created_at&order=created_at.asc&limit=10`,
+    { method: "GET" },
+  );
+  if (!found.ok) {
+    throw new HttpError(502, "agent_inbox_failed");
+  }
+
+  const rows = (await found.json()) as AgentMessageRow[];
+  return json({ messages: rows }, 200, env, request.headers.get("origin"));
+}
+
+async function handleAgentReply(request: Request, env: Env): Promise<Response> {
+  requireDeviceToken(request, env);
+
+  const body = await readJson<{ trap_id?: string; reply_to?: string; content?: string }>(request);
+  const trapId = requireText(body.trap_id, "trap_id");
+  const replyTo = requireText(body.reply_to, "reply_to");
+  const content = requireText(body.content, "content").slice(0, 4000);
+
+  // 先に pending -> answered の CAS で質問を「先取り」する。
+  // 条件付き PATCH が 0 行なら「存在しない/別 trap/既に回答済み」なので拒否 ——
+  // これが二重回答 (POST タイムアウト再送・PATCH 失敗後の再配布) の唯一の防壁。
+  const claimed = await supabaseFetch(
+    env,
+    `/rest/v1/agent_messages?id=eq.${encodeURIComponent(replyTo)}&trap_id=eq.${encodeURIComponent(trapId)}&role=eq.user&status=eq.pending`,
+    {
+      method: "PATCH",
+      headers: { Prefer: "return=representation" },
+      body: JSON.stringify({ status: "answered" }),
+    },
+  );
+  if (!claimed.ok) {
+    throw new HttpError(502, "agent_reply_claim_failed");
+  }
+  const claimedRows = (await claimed.json()) as Array<{ id: string }>;
+  if (claimedRows.length === 0) {
+    throw new HttpError(404, "question_not_found_or_answered");
+  }
+
+  const inserted = await supabaseFetch(env, "/rest/v1/agent_messages", {
+    method: "POST",
+    headers: { Prefer: "return=minimal" },
+    body: JSON.stringify({
+      trap_id: trapId,
+      role: "agent",
+      content,
+      status: "answered",
+      reply_to: replyTo,
+    }),
+  });
+  if (!inserted.ok) {
+    // 先取りを解除して再試行可能に戻す (ベストエフォート)
+    await supabaseFetch(
+      env,
+      `/rest/v1/agent_messages?id=eq.${encodeURIComponent(replyTo)}&role=eq.user`,
+      { method: "PATCH", body: JSON.stringify({ status: "pending" }) },
+    ).catch(() => {});
+    return corsResponse(inserted.body, inserted.status, env, getContentType(inserted), request.headers.get("origin"));
+  }
+
+  return json({ ok: true }, 200, env, request.headers.get("origin"));
 }
 
 async function getTrap(env: Env, trapId: string): Promise<TrapRow | null> {
