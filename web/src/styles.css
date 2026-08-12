@@ -288,6 +288,113 @@ input {
   opacity: 0.65;
 }
 
+.chat-panel {
+  margin-bottom: 18px;
+  padding: 18px;
+  background: #fff;
+  border: 1px solid #dce4dc;
+  border-radius: 8px;
+}
+
+.chat-note {
+  margin: 0 0 12px;
+  font-size: 13px;
+  color: #68756d;
+}
+
+.chat-list {
+  max-height: 340px;
+  overflow-y: auto;
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  background: #f9fbf8;
+  border: 1px solid #edf1ee;
+  border-radius: 8px;
+}
+
+.chat-empty {
+  margin: 24px 0;
+  text-align: center;
+  color: #68756d;
+}
+
+.chat-row {
+  display: flex;
+}
+
+.chat-row.user {
+  justify-content: flex-end;
+}
+
+.chat-row.agent {
+  justify-content: flex-start;
+}
+
+.chat-bubble {
+  max-width: 85%;
+  padding: 9px 12px;
+  border-radius: 10px;
+  background: #eef3ec;
+}
+
+.chat-row.user .chat-bubble {
+  background: #e2ead9;
+}
+
+.chat-meta {
+  margin: 0 0 4px;
+  font-size: 11px;
+  color: #68756d;
+}
+
+.chat-pending {
+  color: #8a6d1a;
+  font-weight: 700;
+}
+
+.chat-content {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.chat-awaiting {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: #8a6d1a;
+}
+
+.chat-form {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.chat-form input {
+  flex: 1;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid #cbd5cd;
+  border-radius: 6px;
+  /* 16px未満だとiOS Safariがフォーカス時にズームする */
+  font-size: 16px;
+}
+
+.chat-form button {
+  border: 0;
+  border-radius: 6px;
+  padding: 10px 18px;
+  background: #29583b;
+  color: #fff;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.chat-form button:disabled {
+  opacity: 0.55;
+}
+
 .table-wrap {
   overflow-x: auto;
   background: #fff;

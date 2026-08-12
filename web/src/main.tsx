@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import { LogOut, Play, RefreshCw } from "lucide-react";
 import type { Session } from "@supabase/supabase-js";
 import { supabase } from "./supabase";
-import type { Profile, Trap, Video } from "./types";
+import type { AgentMessage, Profile, Trap, Video } from "./types";
 import "./styles.css";
 
 const apiBaseUrl = import.meta.env.VITE_WORKER_API_URL as string | undefined;
@@ -87,6 +87,8 @@ function VideoDashboard({ session }: { session: Session }) {
   const [loadingTraps, setLoadingTraps] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [updatingTrapId, setUpdatingTrapId] = useState<string | null>(null);
+  const [chatMessages, setChatMessages] = useState<AgentMessage[]>([]);
+  const chatRequestInFlight = useRef(false);
   const videosLoaded = useRef(false);
   const trapsLoaded = useRef(false);
   const videosRequestInFlight = useRef(false);
@@ -180,17 +182,68 @@ function VideoDashboard({ session }: { session: Session }) {
   useEffect(() => {
     void loadDashboard();
     const pollingId = window.setInterval(() => {
-      void Promise.all([loadVideos(), loadTraps()]);
+      void Promise.all([loadVideos(), loadTraps(), loadChat()]);
     }, 20_000);
 
     return () => window.clearInterval(pollingId);
   }, [session.access_token, session.user.id]);
 
+  async function loadChat() {
+    if (chatRequestInFlight.current) return;
+    chatRequestInFlight.current = true;
+    try {
+      // 降順で「最新200件」を取り、表示用に昇順へ反転する。
+      // 昇順+limit だと「最古の200件」になり、上限到達後に新着が永久に見えなくなる。
+      const { data, error: chatError } = await supabase
+        .from("agent_messages")
+        .select("id,trap_id,role,author_email,content,status,reply_to,created_at")
+        .order("created_at", { ascending: false })
+        .limit(200);
+      if (chatError) {
+        // テーブル未適用 (SQL未実行) の間はチャット欄だけ無効にし、他は動かす
+        return;
+      }
+      setChatMessages(((data ?? []) as AgentMessage[]).reverse());
+    } finally {
+      chatRequestInFlight.current = false;
+    }
+  }
+
+  async function sendChatQuestion(trapId: string, content: string): Promise<boolean> {
+    const { data, error: insertError } = await supabase
+      .from("agent_messages")
+      .insert({
+        trap_id: trapId,
+        role: "user",
+        status: "pending",
+        author_id: session.user.id,
+        author_email: session.user.email ?? null,
+        content,
+      })
+      .select("id,trap_id,role,author_email,content,status,reply_to,created_at")
+      .single();
+    if (insertError) {
+      // pending 3件上限 (RLS) に当たった場合もここに来る
+      setError("質問を送信できませんでした。未回答の質問が溜まっている場合は回答をお待ちください。");
+      return false;
+    }
+    // ポーリング中の loadChat が in-flight だと再読込が no-op になるため、
+    // 挿入結果をその場で反映して「送ったのに出ない」を防ぐ。
+    if (data) {
+      setChatMessages((current) =>
+        current.some((row) => row.id === (data as AgentMessage).id)
+          ? current
+          : [...current, data as AgentMessage],
+      );
+    }
+    return true;
+  }
+
   async function loadDashboard() {
     setError(null);
     if (!videosLoaded.current) setLoading(true);
     if (!trapsLoaded.current) setLoadingTraps(true);
-    await Promise.all([loadVideos(), loadTraps(), loadProfile()]);
+    await Promise.all([loadVideos(), loadTraps(), loadProfile(), loadChat()]);
   }
 
   async function openPlayer(video: Video) {
@@ -351,6 +404,12 @@ function VideoDashboard({ session }: { session: Session }) {
         )}
       </section>
 
+      <AgentChatPanel
+        traps={traps}
+        messages={chatMessages}
+        onSend={sendChatQuestion}
+      />
+
       <section className="table-wrap">
         <table>
           <thead>
@@ -401,6 +460,101 @@ function VideoDashboard({ session }: { session: Session }) {
         </div>
       )}
     </main>
+  );
+}
+
+function AgentChatPanel({
+  traps,
+  messages,
+  onSend,
+}: {
+  traps: Trap[];
+  messages: AgentMessage[];
+  onSend: (trapId: string, content: string) => Promise<boolean>;
+}) {
+  const [selectedTrapId, setSelectedTrapId] = useState<string>("");
+  const [draft, setDraft] = useState("");
+  const [sending, setSending] = useState(false);
+  const listRef = useRef<HTMLDivElement | null>(null);
+
+  const trapId = selectedTrapId || traps[0]?.trap_id || "";
+  const thread = useMemo(
+    () => messages.filter((message) => message.trap_id === trapId),
+    [messages, trapId],
+  );
+  const awaiting = thread.some((message) => message.role === "user" && message.status === "pending");
+
+  useEffect(() => {
+    const el = listRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [thread.length]);
+
+  async function handleSubmit(event: React.FormEvent) {
+    event.preventDefault();
+    const content = draft.trim();
+    if (!content || !trapId || sending) return;
+    setSending(true);
+    const ok = await onSend(trapId, content);
+    setSending(false);
+    if (ok) setDraft("");
+  }
+
+  if (traps.length === 0) return null;
+
+  return (
+    <section className="chat-panel">
+      <div className="section-heading">
+        <div>
+          <p className="eyebrow">Field Agent</p>
+          <h2>カメラに聞く</h2>
+        </div>
+        {traps.length > 1 && (
+          <select value={trapId} onChange={(event) => setSelectedTrapId(event.target.value)}>
+            {traps.map((trap) => (
+              <option key={trap.trap_id} value={trap.trap_id}>{trap.trap_id}</option>
+            ))}
+          </select>
+        )}
+      </div>
+      <p className="chat-note">
+        状態確認専用の窓口です。現地のカメラ (エージェント) が起きているときに返信します —
+        電波や電源の状況で数分〜数時間かかることがあります。この画面から機材の操作はできません。
+      </p>
+      <div className="chat-list" ref={listRef}>
+        {thread.length === 0 ? (
+          <p className="chat-empty">まだ会話はありません。「昨夜の状況は？」のように聞いてみてください。</p>
+        ) : (
+          thread.map((message) => (
+            <div key={message.id} className={`chat-row ${message.role}`}>
+              <div className="chat-bubble">
+                <p className="chat-meta">
+                  {message.role === "agent" ? "🦌 カメラ" : message.author_email || "利用者"}
+                  <span> · {formatDateTime(message.created_at)}</span>
+                  {message.role === "user" && message.status === "pending" && (
+                    <span className="chat-pending"> · 回答待ち</span>
+                  )}
+                </p>
+                <p className="chat-content">{message.content}</p>
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+      {awaiting && <p className="chat-awaiting">カメラの返信を待っています…</p>}
+      <form className="chat-form" onSubmit={handleSubmit}>
+        <input
+          type="text"
+          value={draft}
+          maxLength={2000}
+          placeholder="例: 昨夜の検知は何件？ バッテリーは大丈夫？"
+          onChange={(event) => setDraft(event.target.value)}
+          disabled={sending}
+        />
+        <button type="submit" disabled={sending || draft.trim() === ""}>
+          {sending ? "送信中…" : "質問する"}
+        </button>
+      </form>
+    </section>
   );
 }
 

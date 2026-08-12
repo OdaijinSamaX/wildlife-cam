@@ -10,3 +10,7 @@ videos/*
 # Logs
 logs/*
 !logs/.gitkeep
+web/node_modules/
+web/dist/
+worker/node_modules/
+worker/.wrangler/

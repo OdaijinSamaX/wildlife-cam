@@ -1,0 +1,19 @@
+[Unit]
+Description=Wildlife Cam Agent Chat Bridge (Web読み取り専用窓口とZeroClaw受付の橋渡し)
+# 通信が無くてもスクリプト側がリトライで待てるため、依存は Wants に留める
+After=network-online.target NetworkManager.service
+Wants=network-online.target
+# 現地では誰も手で復旧できないため、再起動レート制限は設けない (StartLimit系は[Unit]のキー)
+StartLimitIntervalSec=0
+StartLimitBurst=0
+
+[Service]
+Type=simple
+User=odaijinsamax
+WorkingDirectory=/home/odaijinsamax/wildlife-cam
+ExecStart=/usr/bin/python3 /home/odaijinsamax/wildlife-cam/pi/agent_chat_bridge.py
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target
