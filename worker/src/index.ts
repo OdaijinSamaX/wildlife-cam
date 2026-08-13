@@ -181,7 +181,7 @@ async function handleTrapState(request: Request, env: Env, trapId: string): Prom
   // 新規の罠を現地投入するときは、Supabase 側で is_armed を true にすること。
   const isArmed = trap?.is_armed ?? false;
   const config = await getTrapConfig(env, trapId);
-  await upsertTrapHeartbeat(env, trapId, isArmed);
+  await upsertTrapHeartbeat(env, trapId, isArmed, parseStoragePct(request.headers.get("x-storage-pct")));
   const now = new Date().toISOString();
 
   return json(

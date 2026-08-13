@@ -82,8 +82,12 @@ def _videos_disk_used_pct() -> int | None:
         from app_paths import get_videos_dir
 
         usage = _shutil.disk_usage(get_videos_dir())
+        if usage.total <= 0:
+            return None
         return int(usage.used * 100 / usage.total)
-    except OSError:
+    except Exception:
+        # この値は「あると便利」なだけ。arm 判定 (=作動可否) と同じ経路に乗るので、
+        # ここで何が起きても arm ポーリングを止めない (OSError 以外も握り潰す)。
         return None
 
 

@@ -54,9 +54,19 @@ class StorageGuard:
         held = Path(self.videos_dir) / "held"
         if not held.is_dir():
             return 0, 0.0
-        files = [p for p in held.glob("*.mp4") if p.is_file()]
-        total_mb = sum(p.stat().st_size for p in files) / 1048576
-        return len(files), round(total_mb, 1)
+        # check() はメインループが毎周回呼ぶ。通知文に載せる集計値のために
+        # 例外を上げてループを落とさない (ファイルが消える競合など)。
+        count, total_bytes = 0, 0
+        try:
+            for path in held.glob("*.mp4"):
+                try:
+                    total_bytes += path.stat().st_size
+                    count += 1
+                except OSError:
+                    continue
+        except OSError as exc:
+            self.log.warning("held/ summary failed: %s", exc)
+        return count, round(total_bytes / 1048576, 1)
 
     def _notify(self, level: str, message: str) -> None:
         """Telegram へ通知 (ZeroClaw channel send)。失敗しても運用は続ける。"""

@@ -328,8 +328,16 @@ def run_standalone(log):
             # メモリ値を読むだけで通信はしない。値が変わったときだけログに残す。
             storage_pct, storage_ok = storage.check()
             if not storage_ok:
-                # 95%到達: データ保全のため録画を停止して待機 (回収で自動復帰)
-                limiter.write_status("storage_full", on_lte(), storage_pct=storage_pct)
+                # 95%到達: データ保全のため録画を停止して待機 (回収で自動復帰)。
+                # 停止中も滞留分の送信だけは続ける。送信に成功したクリップは削除される
+                # ので、これは「回収に行かずに空きを取り戻せる唯一の自動手段」であり、
+                # 同時に動物が写った動画を現地に取り残さないための経路でもある。
+                # (arm ポーリングは別スレッドなので心拍と storage_pct は流れ続ける)
+                limiter.write_status("storage_full", lte, storage_pct=storage_pct)
+                try:
+                    drain_pending_clips(log, uploader, limiter=limiter, is_lte=lte)
+                except Exception:
+                    log.exception("Pending clip drain failed while storage full")
                 mark_progress()
                 time.sleep(60)
                 continue

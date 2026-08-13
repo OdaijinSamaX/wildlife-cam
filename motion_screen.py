@@ -323,6 +323,15 @@ def screen_and_route(log, videos_dir: str, clip_path: str,
             target = target_dir / f"{Path(clip_path).stem}_{serial:02d}{Path(clip_path).suffix}"
             serial += 1
         shutil.move(clip_path, str(target))
+        if target.name != Path(clip_path).name:
+            # 同名衝突で改名した場合、judgment は元の名前で書かれているため
+            # そのままでは held/ の実体と対応が取れなくなる (RTC の無い Pi Zero では
+            # 時刻補正でファイル名の秒が重複しうる)。対応関係を必ず残す。
+            record["held_as"] = target.name
+            try:
+                write_judgment(videos_dir, record)
+            except OSError as exc:
+                log.warning("Could not record held_as for %s: %s", target, exc)
         log.info("Held (no wildlife): %s", target)
         return "hold"
     except OSError as exc:
