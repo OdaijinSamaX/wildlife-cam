@@ -112,12 +112,15 @@ def extract_features(clip_path: str, rules: dict, progress=None) -> dict:
 
     pixel_delta = rules["pixel_delta"]
     min_active_px = rules["block_active_min_px"]
-    blob_floor_blocks = max(1, int(total_blocks * rules["blob_floor_pct"] / 100.0))
+    # 活動フレームの定義は decide() の「実質的な動体」と同じ土俵 (ブロック数) で持つ。
+    # pct と blocks を別々に閾値化すると、active_seconds は立つのに
+    # substantial_motion は落ちる自己矛盾 (=静かな偽陰性) が起きる。
+    blob_floor_blocks = blob_floor(rules, total_blocks)
 
     prev = None
     frames = 0
     active_frames = 0
-    max_blob_pct = 0.0
+    max_blob_blocks = 0
     track: list[tuple[float, float]] = []
 
     for frame in _decode_gray_frames(clip_path, rules, progress=progress):
@@ -127,41 +130,72 @@ def extract_features(clip_path: str, rules: dict, progress=None) -> dict:
             mask = delta >= pixel_delta
             grid = _blocks_from_mask(mask, block, min_active_px)
             size, centroid = _largest_blob(grid)
-            blob_pct = size * 100.0 / total_blocks
-            if blob_pct > max_blob_pct:
-                max_blob_pct = blob_pct
+            if size > max_blob_blocks:
+                max_blob_blocks = size
             if size >= blob_floor_blocks:
                 active_frames += 1
                 track.append(centroid)
         prev = frame
 
-    # 正味の移動: 軌跡上の任意2点間の最大距離 (格子幅%)。往復する植生は伸びない。
-    max_travel_pct = 0.0
+    net_travel_blocks = _net_displacement(track)
+
+    # 最大振れ幅 (軌跡上の任意2点間の最大距離)。判定には使わず記録だけする。
+    # excursion >> net_travel はその場での往復運動の署名で、held/ を回収した後の
+    # 閾値較正に効く (どちらか一方だけでは往復と横断を見分けられない)。
+    max_excursion_blocks = 0.0
     for i in range(len(track)):
         for j in range(i + 1, len(track)):
             d = math.dist(track[i], track[j])
-            pct = d * 100.0 / grid_w
-            if pct > max_travel_pct:
-                max_travel_pct = pct
+            if d > max_excursion_blocks:
+                max_excursion_blocks = d
 
     return {
         "frames_analyzed": frames,
         "active_seconds": round(active_frames / fps, 2),
-        "max_blob_pct": round(max_blob_pct, 3),
-        "max_travel_pct": round(max_travel_pct, 2),
+        "max_blob_pct": round(max_blob_blocks * 100.0 / total_blocks, 3),
+        "net_travel_pct": round(net_travel_blocks * 100.0 / grid_w, 2),
+        "max_excursion_pct": round(max_excursion_blocks * 100.0 / grid_w, 2),
+        "max_blob_blocks": max_blob_blocks,
+        "total_blocks": total_blocks,
         "track_points": len(track),
     }
+
+
+def _net_displacement(track: list[tuple[float, float]]) -> float:
+    """軌跡の「正味の移動」= 前半1/4の平均位置から後半1/4の平均位置までの距離。
+
+    docs/transparent-gate.md の「動物は横切る・植生はその場で揺れる」を素直に
+    測る指標。往復運動は始点と終点がほぼ同じ位置に戻るため伸びない。
+    (任意2点間の最大距離では、その場で大きく揺れる藪が横断と同じ値を出してしまう。
+     実測: 大きく揺れる箱 excursion 10.0% に対し net 2.5%、横断する箱は 46.9%。)
+    端点1点だけを使うと取りこぼしフレームの影響を受けるので四分位平均をとる。
+    """
+    if len(track) < 2:
+        return 0.0
+    k = max(1, len(track) // 4)
+    head = (sum(p[0] for p in track[:k]) / k, sum(p[1] for p in track[:k]) / k)
+    tail = (sum(p[0] for p in track[-k:]) / k, sum(p[1] for p in track[-k:]) / k)
+    return math.dist(head, tail)
+
+
+def blob_floor(rules: dict, total_blocks: int) -> int:
+    """「実質的な動体」とみなす最小ブロック数 (最低1ブロック)。"""
+    return max(1, int(round(total_blocks * rules["blob_floor_pct"] / 100.0)))
 
 
 def decide(features: dict, rules: dict) -> tuple[str, list[dict]]:
     """特徴量とルールから判定を返す。各ルールの評価を全て記録する。
 
     判定表 (rules ファイルの閾値を参照):
-      1. 実質的な動体が皆無 (max_blob_pct < blob_floor_pct)      → none
-      2. 動物条件を全て満たす (面積帯・持続・正味移動)             → wildlife
+      1. 変化したブロックが1つも無い (max_blob_blocks == 0)        → none (無変化)
+      2. 動物条件を全て満たす (面積帯・持続・正味移動)              → wildlife
       3. 動体はあるが正味移動が微小 (< veg_travel_max_pct)
          かつ面積が動物帯に届かない                                → none (植生の揺れ)
       4. それ以外                                                  → uncertain (送信)
+
+    none を出す口は 1 と 3 だけで、1 は「何も変化していない」という積極的事実、
+    3 は「その場で揺れる小さいもの」という積極的事実に限る。閾値未満の弱い動体は
+    none ではなく uncertain (送信) に落ちる — 偽陰性をデータに焼き付けないため。
     """
     evals = []
 
@@ -169,13 +203,18 @@ def decide(features: dict, rules: dict) -> tuple[str, list[dict]]:
         evals.append({"rule": name, "value": value, "threshold": threshold, "pass": bool(passed)})
         return passed
 
+    # 1. 差分ブロックが皆無 = 無変化。ここだけが「証拠が無いことを根拠にした none」で、
+    #    弱いが実在する動体 (遠い/小さい動物) は下の枝で uncertain に落ちる。
+    any_motion = check(
+        "any_motion", features["max_blob_blocks"], 1, features["max_blob_blocks"] >= 1,
+    )
+    if not any_motion:
+        return DECISION_NONE, evals
+
     substantial = check(
         "substantial_motion", features["max_blob_pct"], rules["blob_floor_pct"],
         features["max_blob_pct"] >= rules["blob_floor_pct"],
     )
-    if not substantial:
-        return DECISION_NONE, evals
-
     size_ok = check(
         "blob_in_animal_band",
         features["max_blob_pct"], [rules["blob_min_pct"], rules["blob_max_pct"]],
@@ -186,15 +225,15 @@ def decide(features: dict, rules: dict) -> tuple[str, list[dict]]:
         features["active_seconds"] >= rules["min_active_seconds"],
     )
     travel_ok = check(
-        "net_travel", features["max_travel_pct"], rules["min_travel_pct"],
-        features["max_travel_pct"] >= rules["min_travel_pct"],
+        "net_travel", features["net_travel_pct"], rules["min_travel_pct"],
+        features["net_travel_pct"] >= rules["min_travel_pct"],
     )
-    if size_ok and duration_ok and travel_ok:
+    if substantial and size_ok and duration_ok and travel_ok:
         return DECISION_WILDLIFE, evals
 
     stationary = check(
-        "vegetation_like_sway", features["max_travel_pct"], rules["veg_travel_max_pct"],
-        features["max_travel_pct"] < rules["veg_travel_max_pct"],
+        "vegetation_like_sway", features["net_travel_pct"], rules["veg_travel_max_pct"],
+        features["net_travel_pct"] < rules["veg_travel_max_pct"],
     )
     undersized = features["max_blob_pct"] < rules["blob_min_pct"]
     if stationary and undersized:
@@ -268,7 +307,7 @@ def screen_and_route(log, videos_dir: str, clip_path: str,
     log.info(
         "Screen[%s] %s: decision=%s blob=%.2f%% travel=%.1f%% active=%.1fs (%dms)",
         record["rules_version"], record["clip"], record["decision"],
-        features.get("max_blob_pct", -1), features.get("max_travel_pct", -1),
+        features.get("max_blob_pct", -1), features.get("net_travel_pct", -1),
         features.get("active_seconds", -1), record["screen_ms"],
     )
 
