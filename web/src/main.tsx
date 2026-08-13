@@ -382,6 +382,11 @@ function VideoDashboard({ session }: { session: Session }) {
                     <p className="trap-meta">
                       デバイス最終確認: {trap.last_seen_at ? formatDateTime(trap.last_seen_at) : "未確認"}
                     </p>
+                    {trap.storage_pct != null && (
+                      <p className={`trap-meta ${trap.storage_pct >= 80 ? "storage-warn" : ""}`}>
+                        SD使用率: {trap.storage_pct}%{trap.storage_pct >= 80 ? " ⚠️ 回収をお願いします" : ""}
+                      </p>
+                    )}
                   </div>
                 </div>
                 <button
@@ -721,7 +726,8 @@ function sameTraps(current: Trap[], incoming: Trap[]): boolean {
       && trap.updated_at === next.updated_at
       && trap.created_at === next.created_at
       && trap.record_seconds === next.record_seconds
-      && trap.cooldown_seconds === next.cooldown_seconds;
+      && trap.cooldown_seconds === next.cooldown_seconds
+      && trap.storage_pct === next.storage_pct;
   });
 }
 
