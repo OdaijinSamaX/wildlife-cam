@@ -8,6 +8,20 @@ The repository also contains a React dashboard, a Cloudflare Worker API, and an 
 野外に置いた Raspberry Pi で動体を検知し、短い動画を録画してクラウドへ送るシステムです。
 現在の主構成は **Pi Zero 2 W 1台で完結する standalone β** です。通信が不安定な場所や不意の電源断を前提に、撮影継続、送信保留、自己復旧、現地診断を実装しています。
 
+## バージョン規約 (世代管理)
+
+**世代 = マイナー番号**で管理します (全体を 0.x に留めるのは研究開発版であることの明示)。
+詳細と各版の変更履歴は [`CHANGELOG.md`](CHANGELOG.md) を参照してください。
+
+| 世代 | 版系列 | 意味 |
+|---|---|---|
+| α | 0.1.x | プロトタイプ期 (親子機/クラウドMVP) |
+| β | 0.2.x | 屋久島設置版 (単機フィールド投入・現地耐障害化) |
+| γ | 0.3.x | 回収後の進化 (透明送信ゲート・エージェント化) |
+
+タグは「フィールドの機体に配備した状態」に打ち、GitHub Release に変更概要を残します。
+v1.0.0 は複数台の実運用移管を達成した時点のために予約しています。
+
 ## 現行アーキテクチャ
 
 ### Standalone β（主構成）
@@ -108,6 +122,24 @@ PIR motion
 - 状態は再起動をまたいで永続化します。詳細は [`docs/upload-budget.md`](docs/upload-budget.md) を参照してください。
 - 撮影cooldownとburst circuit breakerも実装済みですが、撮り逃しを避けるため既定では無効です。
 
+### 遠隔設定チェーン (v0.2.x)
+
+- 録画秒数・撮影間隔・PIR持続判定は **Webの罠カードから遠隔変更**できます。
+  設定は R2 (`trap-config/<trap_id>.json`) に保存され、Piがarm確認ポーリング(約10秒毎)の
+  応答で受け取って次の周回から適用します (優先順位: サーバ設定 > `.env` > 既定値)。
+- 通信断時は直近に取得済みのサーバ値をメモリで維持するため、設定は現地で生き続けます。
+- **PIR持続判定 (3秒ゲート)**: HC-SR501の誤検知パルス (実測幅約1.9秒) を、
+  「HIGHがN秒継続して初めて検知」のソフトゲートで遮断します。誤検知→送信→
+  送信のRFがPIRを再発報させる自己増殖ループの実測に基づく対策です。
+
+### エージェントチャット「カメラに聞く」 (v0.2.x)
+
+- Webに**読み取り専用**の質問窓口があります。認証済みユーザー (NPO協力者のviewer含む)
+  が質問を投稿すると、Pi上のブリッジ ([`pi/agent_chat_bridge.py`](pi/agent_chat_bridge.py))
+  が機器状態資料を組み立て、ツール無しのZeroClaw受付エージェント経由でLLMが回答します。
+- この窓口から機器操作は**構造的に不可能**です (操作系エンドポイント自体が存在しない)。
+  操作系は管理者のTelegramチャンネルに分離しています。
+
 ### ネットワーク自己復旧
 
 - `wildlife-netwatch.timer` が60秒ごとにL3、IPv4 DNS、HTTP到達性を確認します。
@@ -161,9 +193,16 @@ WILDLIFE_DEVICE_TOKEN=YOUR_DEVICE_TOKEN
 
 CAMERA_WIDTH=1920
 CAMERA_HEIGHT=1080
-CAMERA_BITRATE=8000000
-CAMERA_BUFFER_COUNT=4
+# 2Mbps: 1080p 30秒で約4.5MB。獣種の判別には十分で、SIM寿命が桁で延びる (屋久島実測)
+CAMERA_BITRATE=2000000
+# バッファ2: CMA(カメラ用連続メモリ)の枯渇による録画開始失敗を緩和 (Zero 2 W)
+CAMERA_BUFFER_COUNT=2
 WILDLIFE_LENS_POSITION=0.5
+
+# フィールド運用値 (Webの罠カードから遠隔上書き可能。ここは通信断時のフォールバック)
+WILDLIFE_RECORD_SECONDS=30
+WILDLIFE_MOTION_COOLDOWN_SEC=300
+WILDLIFE_MOTION_SUSTAIN_SEC=3.0
 
 WILDLIFE_UPLOAD_BUDGET_MB_PER_HOUR=250
 ```
@@ -179,7 +218,9 @@ WILDLIFE_UPLOAD_BUDGET_MB_PER_HOUR=250
 | `WILDLIFE_UPLOAD_NEWEST_FIRST_BACKLOG` | `10` | 新しい動画優先へ切り替えるqueue本数 |
 | `WILDLIFE_MIN_FREE_BYTES` | `2147483648` | 録画用に残す最小空き容量 |
 | `WILDLIFE_VIDEO_MAX_AGE_DAYS` | `14` | local clipの保存日数 |
-| `WILDLIFE_MOTION_COOLDOWN_SEC` | `0` | 撮影cooldown。`0` は無効 |
+| `WILDLIFE_RECORD_SECONDS` | `10` | 1回の録画秒数 (Webから遠隔変更可) |
+| `WILDLIFE_MOTION_COOLDOWN_SEC` | `0` | 撮影cooldown。`0` は無効 (Webから遠隔変更可) |
+| `WILDLIFE_MOTION_SUSTAIN_SEC` | `1.0` | PIRがこの秒数HIGHを続けて初めて検知 (誤検知フィルタ・Webから遠隔変更可) |
 | `WILDLIFE_BURST_PAUSE_ENABLED` | `0` | burst circuit breaker |
 
 ### 3. Deploy
@@ -337,8 +378,11 @@ tests/                     Python regression tests
 
 ## Roadmap
 
-βの次段階では、camera実演から実際のwildlife monitoring/controlへ進めます。
+γ (0.3.x) 以降で、camera実演から実際のwildlife monitoring/controlへ進めます。
 
+- **透明送信ゲート** (v0.3.0・実装済み/検証中): 動物が写った動画のみLTE送信。
+  判定は決定論ルール+版管理閾値で全数追跡可能 (docs/transparent-gate.md)
+- **種の同定 (第2段)**: homelabのバッチで送信済み動画へ事後ラベル (選別には関与しない)
 - 動画から対象動物の **頭数を計数** し、誤検知と複数個体を区別する
 - 判定結果に基づく **落とし扉制御** を統合する
 - 制御系は **通信断・推論不達では保留（作動させない）** を既定にする
