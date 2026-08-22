@@ -1,0 +1,131 @@
+"""ネガティブテスト — 意図的に壊した設計で各チェックが FAIL することの実証.
+
+このリポジトリで一番危ないのは「チェックが常に PASS を返すだけの飾りになること」。
+ここが落ちるようになったら、そのチェックはもう仕事をしていない。
+
+各テストは PARAMS を上書きして「変種」を作る。実際の設計ファイルをそのまま使うので、
+設計が育ってもテストの前提が腐りにくい。
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from harness.checks import FAIL, run_all
+from harness.design import load_design
+
+ROOT = Path(__file__).resolve().parent.parent
+COUPON = ROOT / "designs" / "wildlife_cam" / "fit_coupon.py"
+BEZEL = ROOT / "designs" / "wildlife_cam" / "pir_bezel.py"
+
+
+def result(path, only, override=None):
+    ctx = load_design(path, params_override=override)
+    results = run_all(ctx, only=[only])
+    assert len(results) == 1
+    return results[0]
+
+
+# --- 基準線: 手を入れていない設計は通る -----------------------------------
+
+
+@pytest.mark.parametrize("path,check", [
+    (COUPON, "wall"), (COUPON, "bbox"), (COUPON, "openings"),
+    (BEZEL, "wall"), (BEZEL, "clearance"), (BEZEL, "openings"),
+])
+def test_baseline_designs_pass(path, check):
+    r = result(path, check)
+    assert r.status != FAIL, f"{path.name} / {check}: {r.summary}"
+
+
+# --- 1. 肉厚 0.8 mm の変種 -> wall が FAIL ---------------------------------
+
+
+def test_wall_fails_on_thin_flange():
+    """フランジ厚を 2.3 mm に落とすと、フェイス O リング溝の天井が 0.8 mm になる."""
+    r = result(BEZEL, "wall", {"flange_t": 2.3})
+    assert r.status == FAIL, r.summary
+    assert r.measurements["robust_min_wall_mm"] == pytest.approx(0.8, abs=0.05)
+    assert r.measurements["threshold_mm"] == 1.6
+
+
+def test_wall_passes_on_baseline_bezel():
+    r = result(BEZEL, "wall")
+    assert r.measurements["robust_min_wall_mm"] >= 1.6 - 0.01
+
+
+# --- 2. 部品を壁にめり込ませた変種 -> clearance が FAIL ---------------------
+
+
+def test_clearance_fails_when_component_bites_into_wall():
+    """内径をドームより細くすると、HC-SR501 のドームがベゼルに食い込む."""
+    r = result(BEZEL, "clearance", {"bore_dia": 22.0})
+    assert r.status == FAIL, r.summary
+    assert r.measurements["violations"] >= 1
+    rows = {row["component"]: row for row in r.table}
+    row = rows["HC-SR501 PIR"]
+    assert row["verdict"] == "実体が干渉"
+    assert row["solid_overlap_mm3"] > 1.0
+
+
+def test_clearance_fails_on_clearance_shortfall_only():
+    """実体は当たらないがクリアランスだけ足りない場合も拾う."""
+    r = result(BEZEL, "clearance", {"bore_dia": 23.05})
+    assert r.status == FAIL, r.summary
+    rows = {row["component"]: row for row in r.table}
+    assert rows["HC-SR501 PIR"]["solid_overlap_mm3"] == pytest.approx(0.0, abs=1e-3)
+    assert rows["HC-SR501 PIR"]["overlap_mm3"] > 0.0
+
+
+# --- 3. 300 mm の変種 -> bbox が FAIL --------------------------------------
+
+
+def test_bbox_fails_when_larger_than_build_volume():
+    r = result(COUPON, "bbox", {"plate_l": 300.0})
+    assert r.status == FAIL, r.summary
+    assert r.measurements["x_mm"] == pytest.approx(300.0, abs=0.01)
+    assert r.measurements["margin_mm"][0] < 0
+
+
+# --- 4. 意図しない貫通穴 -> openings が検出 --------------------------------
+
+
+def test_openings_detects_unintended_through_holes():
+    """ヒートセット下穴の深さを板厚より深くすると、止まり穴が貫通穴に化ける."""
+    base = result(COUPON, "openings")
+    assert base.status != FAIL, base.summary
+    base_through = {row["diameter_mm"] for row in base.table if row["through"]}
+
+    broken = result(COUPON, "openings", {"heatset_depth": 20.0})
+    assert broken.status == FAIL, broken.summary
+    broken_through = {row["diameter_mm"] for row in broken.table if row["through"]}
+
+    new = broken_through - base_through
+    assert new == {4.0, 4.2, 4.4}, f"検出された新しい貫通穴: {sorted(new)}"
+    assert broken.measurements["undeclared_openings"] == 3
+    assert any("未宣言の貫通穴" in d for d in broken.details)
+
+
+def test_openings_flags_missing_declared_opening():
+    """宣言した開口が消えた場合も FAIL させる（穴の付け忘れを止める）."""
+    r = result(COUPON, "openings", {"clear_dias": (3.2, 3.4, 3.4)})
+    assert r.status == FAIL, r.summary
+    assert r.measurements["missing_declared_openings"] >= 1
+
+
+# --- 5. overhang が造形姿勢に反応することの確認 -----------------------------
+
+
+def test_overhang_reacts_to_print_orientation():
+    """クーポンを 90 度立てると、平置きでは無かった張り出しが出る."""
+    ctx = load_design(COUPON)
+    flat = run_all(ctx, only=["overhang"])[0]
+
+    ctx2 = load_design(COUPON)
+    ctx2.print_orientation = {"rotate": (90, 0, 0)}
+    tilted = run_all(ctx2, only=["overhang"])[0]
+
+    assert tilted.measurements["flagged_area_mm2"] > flat.measurements["flagged_area_mm2"]
+    assert tilted.status == FAIL, tilted.summary
