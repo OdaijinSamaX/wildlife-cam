@@ -42,16 +42,39 @@ def test_dimension_source_is_declared(mod):
 # --- SORACOM Onyx: メーカー公称値を取り違えていないこと ---------------------
 
 
-def test_onyx_overall_dimensions_match_the_datasheet():
+def test_onyx_overall_dimensions_match_the_measurement():
     bb = geom.as_shape(onyx.model()).BoundingBox()
-    assert (round(bb.xlen, 2), round(bb.ylen, 2), round(bb.zlen, 2)) == (95.0, 36.0, 13.0)
+    assert (round(bb.xlen, 2), round(bb.ylen, 2), round(bb.zlen, 2)) == (89.4, 35.8, 13.2)
+    assert onyx.OVERALL_L == pytest.approx(onyx.BODY_L + onyx.PLUG_L, abs=1e-9)
+
+
+def test_onyx_thin_region_matches_the_measurement():
+    """後端 20.8 mm だけ厚みが 9.3 に落ちる面取り。脇に他の部品を寄せられる."""
+    t0, t1 = onyx.thin_region_x()
+    assert (round(t1 - t0, 2), onyx.THIN_H) == (20.8, 9.3)
+    shape = geom.as_shape(onyx.model())
+    # 薄い区間の中央で切ると、厚みが THIN_H になっている
+    mid = (t0 + t1) / 2
+    slab = shape.intersect(
+        __import__("cadquery").Solid.makeBox(
+            2.0, 60.0, 40.0, __import__("cadquery").Vector(mid - 1.0, -30.0, -20.0))
+    )
+    assert slab.BoundingBox().zlen == pytest.approx(onyx.THIN_H, abs=0.01)
+
+
+def test_onyx_assembled_length_reconciles_with_the_parts():
+    """組立実測 115.0 が 89.4 + 35.0 - 差し込み代 9.4 で辻褄が合うこと."""
+    assert onyx.ASSEMBLED_WITH_OTG_L == pytest.approx(
+        onyx.OVERALL_L + otg_cable.USB_A_L - onyx.PLUG_ENGAGEMENT, abs=1e-9
+    )
+    assert onyx.PLUG_ENGAGEMENT < onyx.PLUG_L, "差し込み代がプラグ長を超えている"
 
 
 def test_onyx_is_a_usb_dongle_not_a_mini_pcie_card():
-    assert onyx.DIM_SOURCE == "datasheet"
+    assert onyx.DIM_SOURCE.startswith("measured:")
     assert onyx.PART_NUMBER == "SC-QGLC4-C1"
     assert "USB" in onyx.FORM_FACTOR
-    assert onyx.total_length() == 95.0
+    assert onyx.total_length() == pytest.approx(89.4, abs=1e-9)
 
 
 def test_onyx_ports_open_to_the_outside():
@@ -61,14 +84,31 @@ def test_onyx_ports_open_to_the_outside():
     assert count - len(border) == 0, "閉じた空洞ができている"
 
 
-def test_onyx_envelope_reserves_room_on_both_long_sides():
-    """CRC9 がどちらの長辺か未確定なので、envelope は両側に逃げを取る."""
+def test_onyx_envelope_has_no_antenna_clearance_by_default():
+    """外部アンテナは使わないと決まった（2026-08-22）ので既定では逃げを取らない."""
     bb = geom.as_shape(onyx.envelope(0.0)).BoundingBox()
+    assert bb.ylen == pytest.approx(onyx.BODY_W, abs=0.01)
+    assert bb.xmin == pytest.approx(-onyx.INSERT_TRAVEL, abs=0.01)
+
+
+def test_onyx_envelope_still_supports_external_antenna_on_request():
+    bb = geom.as_shape(onyx.envelope(0.0, external_antenna=True)).BoundingBox()
     reach = onyx.CRC9_PLUG_L + onyx.CABLE_BEND
     assert bb.ymin == pytest.approx(-(onyx.BODY_W / 2 + reach), abs=0.01)
     assert bb.ymax == pytest.approx(onyx.BODY_W / 2 + reach, abs=0.01)
-    # 抜き差し代
-    assert bb.xmin == pytest.approx(-onyx.INSERT_TRAVEL, abs=0.01)
+
+
+def test_pi_zero_connector_spacing_fits_the_otg_housing():
+    """データ口と電源口の間に OTG の micro-USB ハウジングが収まること."""
+    from parts import pi_zero_2w
+
+    pos = pi_zero_2w.connector_positions()
+    assert pos["usb_data"][1] - pos["mini_hdmi"][0] == pytest.approx(38.8, abs=1e-9)
+    assert pos["usb_power"][1] - pos["usb_data"][0] == pytest.approx(20.5, abs=1e-9)
+    # ハウジングをデータ口の中心に合わせたとき、電源口の縁まで残るすきま
+    half = otg_cable.MICRO_W / 2
+    edge = pi_zero_2w.connector_center("usb_data") + half
+    assert pos["usb_power"][0] - edge > 1.0
 
 
 def _longest_dims() -> dict[str, float]:
@@ -147,11 +187,21 @@ def test_otg_cable_dimensions_are_self_consistent():
 
 
 def test_serial_chain_exceeds_the_p1s_build_volume():
-    """直列に並べると造形枠を超えるので折り返しが必須、という前提のテスト."""
+    """直列に並べると造形枠を超えるので折り返しが必須、という前提のテスト.
+
+    実測が入って内訳が変わった: Pi 65 + micro ハウジング 30.8 + 可動 84.2 +
+    Onyx+USB-A の剛体ブロック 115.0 = 295.0。
+    """
     from parts import pi_zero_2w
 
-    chain = pi_zero_2w.PCB_L + otg_cable.TOTAL_L + onyx.OVERALL_L
-    assert chain == pytest.approx(310.0, abs=1e-9)
+    chain = (pi_zero_2w.PCB_L + otg_cable.MICRO_L + otg_cable.FLEX_LENGTH
+             + onyx.ASSEMBLED_WITH_OTG_L)
+    assert chain == pytest.approx(295.0, abs=1e-9)
     assert chain > 256.0, "折り返し配置が不要になったなら docs を直すこと"
-    # 折り返せば枠に収まること
-    assert otg_cable.folded_span(2) + onyx.OVERALL_L < 256.0
+
+
+def test_assembled_rigid_block_is_the_dominant_dimension():
+    """箱の中を貫く曲がらない実長は 115.0。単体の 89.4 ではない."""
+    assert onyx.ASSEMBLED_WITH_OTG_L == 115.0
+    assert onyx.ASSEMBLED_WITH_OTG_L > onyx.OVERALL_L
+    assert onyx.ASSEMBLED_WITH_OTG_L < 256.0, "剛体単体で造形枠を超えたら詰み"

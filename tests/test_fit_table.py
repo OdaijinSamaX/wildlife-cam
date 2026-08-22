@@ -14,7 +14,9 @@ from harness.checks import FAIL, PASS, WARN, run_all
 from harness.design import load_design
 
 ROOT = Path(__file__).resolve().parent.parent
-DESIGNS = sorted((ROOT / "designs").rglob("*.py"))
+#: 先頭が "_" のファイルは設計ではなく共通モジュール（harness list と同じ規則）
+DESIGNS = sorted(p for p in (ROOT / "designs").rglob("*.py")
+                 if not p.name.startswith("_"))
 COUPON_V1 = ROOT / "designs" / "wildlife_cam" / "fit_coupon.py"
 COUPON_V2 = ROOT / "designs" / "wildlife_cam" / "fit_coupon_v2.py"
 BEZEL = ROOT / "designs" / "wildlife_cam" / "pir_bezel.py"

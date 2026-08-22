@@ -104,7 +104,8 @@ tests/             ネガティブテスト
 out/               生成物（.gitignore 済み）
 docs/AGENTS.md     AI が設計を書くときの規約
 docs/HARNESS.md    各チェックの意味・閾値の根拠
-docs/DECISIONS.md  設計判断の記録（不採用にした案も残す）・限界
+docs/DECISIONS.md  設計判断の記録（不採用にした案も残す）
+docs/layout-study.md  wildlife-cam 内部レイアウトの比較検討（3 案 + 推奨）・限界
 ```
 
 ## チェック
@@ -151,7 +152,8 @@ uv run pytest -q
 |---|---|
 | `designs/wildlife_cam/fit_coupon.py` | 公差校正クーポン v1。**2026-08-22 に印刷して実測済み**の実物の記録（凍結） |
 | `designs/wildlife_cam/fit_coupon_v2.py` | 同 v2。補正テーブルを通し、基準ピンを折り取り式の独立部品にした。実測値と導出は [fit_coupon.md](designs/wildlife_cam/fit_coupon.md) |
-| `designs/wildlife_cam/pir_bezel.py` | HC-SR501 を筐体壁に防水で貫通させるベゼル |
+| `designs/wildlife_cam/pir_bezel.py` | HC-SR501 を筐体壁に防水で貫通させる接着封止キャリア |
+| `designs/wildlife_cam/layout_study_{a,b,c}.py` | 内部レイアウトの比較検討 3 案。結論は [layout-study.md](docs/layout-study.md) |
 
 どちらも **まだ印刷していない**。
 

@@ -10,16 +10,58 @@ import cadquery as cq
 
 from harness.component import make_component
 
-DIM_SOURCE = "datasheet"
+DIM_SOURCE = "datasheet+measured:2026-08-22"
 
 PCB_L = 65.0          # データシート
 PCB_W = 30.0          # データシート
 PCB_T = 1.0           # データシート
 HOLE_DIA = 2.75       # データシート
 HOLE_INSET = 3.5      # データシート（各辺から穴中心まで）
-TOP_COMP_H = 3.0      # 推定（SoC / 無線シールド / microSD）
-BOT_COMP_H = 1.2      # 推定（はんだ面）
+TOP_COMP_H = 8.8      # 実測 2026-08-22（GPIO 40 ピンヘッダのピン先まで）
+BOT_COMP_H = 0.4      # 実測 2026-08-22（ほぼ面一。平面にべた置きできる）
 CONNECTOR_MARGIN = 6.0  # 推定（USB / HDMI ケーブルの抜き差し代）
+
+#: 裏面がほぼ面一（0.4 mm）なので、スペーサ無しで平面にべた置きできる。
+CAN_SIT_FLAT = True
+
+# --- コネクタ（すべて同じ長辺に並ぶ） --------------------------------------
+# microSD スロットを上に見て、左の角から mini-HDMI / micro-USB データ /
+# micro-USB 電源 の順。外側の縁どうしの実測 2026-08-22:
+#     mini-HDMI -> データ  38.8 mm
+#     データ    -> 電源    20.5 mm
+# コネクタ単体の幅は推定（mini-HDMI 11.0 / micro-USB 8.0）。
+# 左角から mini-HDMI までの距離は測っていない（推定 12.0）。
+HDMI_W = 11.0             # 推定
+USB_W = 8.0               # 推定
+HDMI_FROM_LEFT = 12.0     # 推定（要実測）
+HDMI_TO_DATA_OUTER = 38.8   # 実測 2026-08-22（外側の縁どうし）
+DATA_TO_POWER_OUTER = 20.5  # 実測 2026-08-22（外側の縁どうし）
+CONNECTOR_H = 3.0         # 推定（基板面からコネクタ上面まで）
+
+#: microSD カードが基板の縁から飛び出す量
+SD_CARD_PROTRUSION = 4.1  # 実測 2026-08-22
+SD_CARD_W = 11.0          # 推定（microSD の幅）
+
+
+def connector_positions() -> dict[str, tuple[float, float]]:
+    """コネクタ長辺に沿った (開始, 終了) を、基板の左角からの距離で返す.
+
+    「外側の縁どうし」の実測から逆算している:
+        data_end   = hdmi_start + 38.8
+        power_end  = data_start + 20.5
+    """
+    h0 = HDMI_FROM_LEFT
+    h1 = h0 + HDMI_W
+    d1 = h0 + HDMI_TO_DATA_OUTER
+    d0 = d1 - USB_W
+    p1 = d0 + DATA_TO_POWER_OUTER
+    p0 = p1 - USB_W
+    return {"mini_hdmi": (h0, h1), "usb_data": (d0, d1), "usb_power": (p0, p1)}
+
+
+def connector_center(name: str) -> float:
+    a, b = connector_positions()[name]
+    return (a + b) / 2
 
 HOLE_PITCH_X = PCB_L - 2 * HOLE_INSET   # 58.0
 HOLE_PITCH_Y = PCB_W - 2 * HOLE_INSET   # 23.0
@@ -35,7 +77,11 @@ def hole_positions() -> list[tuple[float, float]]:
 
 
 def model() -> cq.Workplane:
-    """PCB 上面を z=0 とし、部品は +z 側に出る（基板中心が原点）."""
+    """PCB 上面を z=0 とし、部品は +z 側に出る（基板中心が原点）.
+
+    コネクタ長辺は -Y 側（y = -PCB_W/2）とする。`connector_positions()` の
+    距離は、その辺に沿って -X 端（左角）から測ったもの。
+    """
     pcb = (
         cq.Workplane("XY")
         .box(PCB_L, PCB_W, PCB_T, centered=(True, True, False))

@@ -29,6 +29,11 @@ from . import FAIL, PASS, WARN, CheckResult, register
 def check(ctx) -> CheckResult:
     feats = ctx.features
     tol = float(ctx.config("layout_volume_tol_mm3", 1e-3))
+    # 機械的に繋がっていて「接するのが正しい」組は、設計が明示的に宣言する。
+    # 例: コネクタとその相手、ケーブルとハウジング。
+    allow = {
+        frozenset(pair) for pair in ctx.config("layout_allow_contact", []) or []
+    }
     min_dia = float(ctx.config("openings_min_diameter_mm", 0.8))
 
     if not feats:
@@ -44,6 +49,7 @@ def check(ctx) -> CheckResult:
         )
 
     rows = []
+    declared: list[dict] = []
     worst = 0.0
     pairs = 0
     skipped = 0
@@ -58,6 +64,12 @@ def check(ctx) -> CheckResult:
         except Exception as exc:
             rows.append({"a": a.name, "b": b.name, "overlap_mm3": "ERROR",
                          "note": type(exc).__name__})
+            continue
+        if vol > tol and frozenset((a.name, b.name)) in allow:
+            declared.append({
+                "a": a.name, "b": b.name, "overlap_mm3": round(vol, 3),
+                "note": "接触を宣言済み（機械的に繋がっている組）",
+            })
             continue
         worst = max(worst, vol)
         if vol > tol:
@@ -90,9 +102,20 @@ def check(ctx) -> CheckResult:
         "overlapping_pairs": len([r for r in rows if r["overlap_mm3"] != "ERROR"]),
         "max_overlap_mm3": round(worst, 3),
         "unclaimed_holes": len(unclaimed),
+        "declared_contacts": len(declared),
+        "declared_contacts_unused": len(allow) - len(declared),
         "margins_mm": sorted({round(f.margin, 3) for f in feats}),
     }
     cols = ["a", "b", "overlap_mm3", "note"]
+
+    details: list[str] = []
+    if allow and len(declared) < len(allow):
+        # 宣言したのに実際には触れていない組。エラーではないが、宣言が
+        # 実物とずれている（あるいは要らなくなった）合図なので出しておく。
+        details.append(
+            f"layout_allow_contact の宣言 {len(allow)} 組のうち "
+            f"{len(allow) - len(declared)} 組は実際には接触していない"
+        )
 
     if rows or unclaimed:
         n = len(rows) + len(unclaimed)
@@ -102,15 +125,20 @@ def check(ctx) -> CheckResult:
         if unclaimed:
             head.append(f"宣言されていない穴が {len(unclaimed)} 個")
         return CheckResult(
-            "layout", FAIL, " / ".join(head), m,
-            table=rows + unclaimed, table_columns=cols, limits=LIMITS,
+            "layout", FAIL, " / ".join(head), m, details=details,
+            table=rows + unclaimed + declared, table_columns=cols, limits=LIMITS,
         )
 
-    return CheckResult(
-        "layout", PASS,
+    summary = (
         f"フィーチャ {len(feats)} 個、{pairs} 組を実測して食い合いなし"
-        f"（bbox で {skipped} 組を除外）",
-        m, limits=LIMITS,
+        f"（bbox で {skipped} 組を除外）"
+    )
+    if declared:
+        summary += f" / 接触を宣言した組 {len(declared)}"
+    return CheckResult(
+        "layout", PASS, summary, m, details=details,
+        table=declared or None, table_columns=cols if declared else None,
+        limits=LIMITS,
     )
 
 
