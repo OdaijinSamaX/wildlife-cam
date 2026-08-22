@@ -107,7 +107,8 @@ docs/HARNESS.md    各チェックの意味・閾値の根拠
 docs/DECISIONS.md  設計判断の記録（不採用にした案も残す）
 docs/layout-study.md  wildlife-cam 内部レイアウトの比較検討（4 案 + 推奨）
 docs/window-options.md  カメラ窓の方式と材料の比較
-docs/field-procedure.md 現地作業手順の下書き・限界
+docs/field-procedure.md 現地作業手順の下書き
+docs/enclosure-body.md  カメラユニット本体の設計判断（貫通・締結・分割の是非）・限界
 ```
 
 ## チェック
@@ -157,6 +158,8 @@ uv run pytest -q
 | `designs/wildlife_cam/fit_coupon_v2.py` | 同 v2。補正テーブルを通し、基準ピンを折り取り式の独立部品にした。実測値と導出は [fit_coupon.md](designs/wildlife_cam/fit_coupon.md) |
 | `designs/wildlife_cam/pir_bezel.py` | HC-SR501 を筐体壁に防水で貫通させる接着封止キャリア |
 | `designs/wildlife_cam/layout_study_{a,b,c,d}.py` | 内部レイアウトの比較検討 4 案。結論は [layout-study.md](docs/layout-study.md) |
+| `designs/wildlife_cam/camera_unit.py` | **カメラユニット本体（実設計）**。案D を起こしたもの |
+| `designs/wildlife_cam/camera_unit_lid.py` | 同 背面の蓋。鞍（V 溝）とベルト溝つき |
 | `designs/wildlife_cam/window_snoot.py` | カメラ窓（主案）。既製ドーム蓋 + カメラ送り出し筒 |
 | `designs/wildlife_cam/window_hood.py` | カメラ窓（代替案）。平板 + 庇 |
 
