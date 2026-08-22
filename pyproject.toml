@@ -1,0 +1,17 @@
+[project]
+name = "enclosure-lab"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "cadquery>=2.8.0",
+    "manifold3d>=3.5.2",
+    "networkx>=3.6.1",
+    "pytest>=9.1.1",
+    "rtree>=1.4.1",
+    "shapely>=2.1.2",
+    "trimesh>=5.0.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
