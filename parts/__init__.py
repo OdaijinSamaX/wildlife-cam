@@ -20,6 +20,7 @@ from . import (  # noqa: F401
     ir_illuminator,
     m3_heatset,
     oring,
+    otg_cable,
     pi_zero_2w,
     soracom_onyx,
 )
@@ -32,6 +33,7 @@ ALL = [
     ir_illuminator,
     m3_heatset,
     oring,
+    otg_cable,
     cable_gland,
     gore_vent,
 ]

@@ -102,7 +102,8 @@ designs/           設計スクリプト
 tests/             ネガティブテスト
 out/               生成物（.gitignore 済み）
 docs/AGENTS.md     AI が設計を書くときの規約
-docs/HARNESS.md    各チェックの意味・閾値の根拠・限界
+docs/HARNESS.md    各チェックの意味・閾値の根拠
+docs/DECISIONS.md  設計判断の記録（不採用にした案も残す）・限界
 ```
 
 ## チェック
@@ -149,8 +150,12 @@ uv run pytest -q
 | `designs/wildlife_cam/fit_coupon.py` | 嵌合公差テーブルを 1 回の印刷で確定させる校正クーポン（120 x 90 x 20 mm）。手順は [fit_coupon.md](designs/wildlife_cam/fit_coupon.md) |
 | `designs/wildlife_cam/pir_bezel.py` | HC-SR501 を筐体壁に防水で貫通させるベゼル |
 
-どちらも **まだ印刷していない**。`parts/hcsr501.py` の寸法が全て推定なので、
-pir_bezel は実測が入るまで印刷しないこと。
+どちらも **まだ印刷していない**。
+
+`pir_bezel.py` は名前こそベゼルだが、中身は**接着封止キャリア**である。
+HC-SR501 の実測（2026-08-22）でドームにツバが無いことが判明し、
+「フランジを O リングで壁に押し付ける」旧構成が不成立になったため作り直した。
+検討して不採用にした案を含む経緯は [docs/DECISIONS.md](docs/DECISIONS.md) にある。
 
 筐体本体の設計に入る前に、`docs/AGENTS.md` の「内蔵部品の寸法順位」を見ること。
 最長の部品は SORACOM Onyx（USB ドングル・95 mm）で、筐体の内寸はこれで決まる。
