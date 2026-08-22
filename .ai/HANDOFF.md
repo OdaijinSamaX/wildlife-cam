@@ -67,9 +67,14 @@ uv run pytest -q
 ## Hardware or credential gaps
 
 - 3D プリンタ（P1S）での **実印刷は未実施**。
-- HC-SR501 / EG25-G / IR 投光器の **実測が未実施**。`parts/` の該当モジュールは
+- HC-SR501 / SORACOM Onyx / IR 投光器の **実測が未実施**。`parts/` の該当モジュールは
   `DIM_SOURCE = "estimated"`。特に `pir_bezel` は HC-SR501 の実測が入るまで
   印刷しないこと。
+- `parts/soracom_onyx.py` は外形 95x36x13 / 36g がメーカー公称 (`DIM_SOURCE = "datasheet"`)
+  だが、**USB プラグ突出量・SIM スロット位置・CRC9 端子位置は推定**で、実測待ち。
+  CRC9 がどちらの長辺かも不明なため、envelope は両側に逃げを取る保守的な形にしてある。
+- **筐体内で最長の部品は SORACOM Onyx の 95 mm**（Pi Zero 2 W の 65 mm より長い）。
+  抜き差し代を含めると 110 mm 前後の直線的な空きが要る。詳細は docs/AGENTS.md。
 - スライサ連携（印刷時間・材料量の見積り）は次フェーズ。
 
 ## Smallest acceptable fix policy
