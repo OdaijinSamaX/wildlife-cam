@@ -72,7 +72,12 @@ def run_all(ctx, only: Iterable[str] | None = None) -> list[CheckResult]:
     return results
 
 
-from . import bbox, clearance, interference, manifold, openings, overhang, wall  # noqa: E402,F401
+from . import (  # noqa: E402,F401
+    bbox, clearance, interference, layout, manifold, openings, overhang, wall,
+)
 
 #: レポートに出す順序（登録順ではなく意味の順）
-ORDER[:] = ["manifold", "wall", "bbox", "interference", "clearance", "overhang", "openings"]
+ORDER[:] = [
+    "manifold", "wall", "bbox", "interference", "layout",
+    "clearance", "overhang", "openings",
+]

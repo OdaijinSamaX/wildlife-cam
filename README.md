@@ -95,6 +95,7 @@ harness/           ハーネス本体
   render.py        多視点 + 断面 PNG（VTK / ソフトウェア）
   report.py        Markdown レポート
   component.py     内蔵部品を表す型
+  feature.py       フィーチャの占有領域 (claim) を表す型と、その作り方
   checks/          7 つのチェック（下記）
 parts/             内蔵部品のダミー形状（BOM プリミティブ）
 designs/           設計スクリプト
@@ -112,9 +113,10 @@ docs/HARNESS.md    各チェックの意味・閾値の根拠・限界
 | 2 | wall | 最小肉厚（レイキャスト法）。薄い箇所は座標も出す |
 | 3 | bbox | 造形姿勢を適用したあと P1S の枠に収まるか |
 | 4 | interference | ソリッド同士のブーリアン積の体積が 0 か |
-| 5 | clearance | 内蔵部品の外形 + クリアランスが筐体と干渉しないか |
-| 6 | overhang | 造形姿勢を適用したあとの下向き面の面積と渡り幅 |
-| 7 | openings | 内外を貫通する開口の一覧と面積（防水の要） |
+| 5 | layout | **同じソリッドの中で**フィーチャ同士が場所を奪い合っていないか |
+| 6 | clearance | 内蔵部品の外形 + クリアランスが筐体と干渉しないか |
+| 7 | overhang | 造形姿勢を適用したあとの下向き面の面積と渡り幅 |
+| 8 | openings | 内外を貫通する開口の一覧と面積（防水の要） |
 
 **すべてのチェックは PASS/FAIL だけでなく実測値を返す。**
 閾値の根拠と「何を見逃すか」は `docs/HARNESS.md` にある。
@@ -134,6 +136,9 @@ uv run pytest -q
 - 300 mm に伸ばした変種 → `bbox` が FAIL
 - 止まり穴を貫通させた変種 → `openings` がその穴を検出して FAIL
 - 造形姿勢を 90 度倒した変種 → `overhang` が FAIL
+- O リング溝を基準ピンの根元に重ねた変種 → `layout` が FAIL（実際に出た不具合の再現）
+- 取付ねじをシール溝に寄せた変種 → `layout` が FAIL
+- 穴の宣言を 1 つ落とした変種 → `layout` が「宣言し忘れ」として FAIL
 
 **ネガティブテストが無いチェックは未完成とみなす。**
 
@@ -141,7 +146,7 @@ uv run pytest -q
 
 | 設計 | 何のためか |
 |---|---|
-| `designs/wildlife_cam/fit_coupon.py` | 嵌合公差テーブルを 1 回の印刷で確定させる校正クーポン。手順は [fit_coupon.md](designs/wildlife_cam/fit_coupon.md) |
+| `designs/wildlife_cam/fit_coupon.py` | 嵌合公差テーブルを 1 回の印刷で確定させる校正クーポン（120 x 90 x 20 mm）。手順は [fit_coupon.md](designs/wildlife_cam/fit_coupon.md) |
 | `designs/wildlife_cam/pir_bezel.py` | HC-SR501 を筐体壁に防水で貫通させるベゼル |
 
 どちらも **まだ印刷していない**。`parts/hcsr501.py` の寸法が全て推定なので、
