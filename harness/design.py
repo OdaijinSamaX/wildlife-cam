@@ -10,6 +10,7 @@ from typing import Any
 
 import cadquery as cq
 
+from . import fit as fit_mod
 from . import geom
 from .component import Component, coerce
 from .feature import Feature
@@ -35,10 +36,17 @@ class DesignContext:
     check_config: dict
     components: list[Component]
     features: list[Feature]
+    #: 狙い形状（印刷後にこうなってほしい形）。全てのチェックとレンダはこれを見る。
     shape: cq.Shape
     raw: Any
+    #: 補正済み形状（スライサに渡す形）。STL / 3MF の書き出しだけに使う。
+    print_raw: Any = None
+    fit: Any = None
+    fit_log: list = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
+    _print_shape: Any = None
+    _oriented_print_shape: Any = None
     _mesh: Any = None
     _oriented_shape: Any = None
     _oriented_mesh: Any = None
@@ -79,6 +87,24 @@ class DesignContext:
             pitch = float(self.config("voxel_pitch_mm", 0.6))
             self._voxels = geom.voxelize(self.mesh, pitch)
         return self._voxels
+
+    @property
+    def print_shape(self) -> cq.Shape:
+        """補正済み形状。宣言が無ければ狙い形状をそのまま返す."""
+        if self._print_shape is None:
+            self._print_shape = (
+                self.shape if self.print_raw is None else geom.as_shape(self.print_raw)
+            )
+        return self._print_shape
+
+    @property
+    def oriented_print_shape(self) -> cq.Shape:
+        if self._oriented_print_shape is None:
+            rot = self.print_orientation.get("rotate", (0, 0, 0))
+            self._oriented_print_shape = geom.drop_to_plate(
+                geom.rotate_shape(self.print_shape, rot)
+            )
+        return self._oriented_print_shape
 
     @property
     def named_solids(self):
@@ -124,7 +150,30 @@ def load_design(path: str | Path, params_override: dict | None = None) -> Design
             warnings.append(f"PARAMS に無いキーを上書きしています: {sorted(unknown)}")
         params.update(params_override)
 
-    raw = module.build(params) if params else module.build()
+    table = getattr(module, "FIT_TABLE", None)
+    if table is not None:
+        table.reset_log()
+
+    def _build():
+        return module.build(params) if params else module.build()
+
+    if table is None:
+        warnings.append(
+            "FIT_TABLE が宣言されていません。寸法補正が効いていない設計です "
+            "（harness/fit.py と docs/AGENTS.md を参照）"
+        )
+        raw = _build()
+        print_raw = None
+        fit_log: list = []
+    else:
+        # 狙い形状（チェック用）と補正済み形状（造形用）を別々に組む。
+        with table.using(fit_mod.MODE_TARGET):
+            raw = _build()
+        fit_log = list(table.log)
+        table.reset_log()
+        with table.using(fit_mod.MODE_PRINT):
+            print_raw = _build()
+        table.reset_log()
 
     print_orientation = dict(getattr(module, "PRINT_ORIENTATION", {"rotate": (0, 0, 0)}))
     check_config = dict(getattr(module, "CHECK_CONFIG", {}))
@@ -138,7 +187,12 @@ def load_design(path: str | Path, params_override: dict | None = None) -> Design
 
     raw_features = getattr(module, "FEATURES", None)
     if raw_features is None and hasattr(module, "features"):
-        raw_features = module.features(params)
+        if table is None:
+            raw_features = module.features(params)
+        else:
+            with table.using(fit_mod.MODE_TARGET):
+                raw_features = module.features(params)
+            table.reset_log()
     features = list(raw_features or [])
     bad = [f for f in features if not isinstance(f, Feature)]
     if bad:
@@ -159,5 +213,8 @@ def load_design(path: str | Path, params_override: dict | None = None) -> Design
         features=features,
         shape=shape,
         raw=raw,
+        print_raw=print_raw,
+        fit=table,
+        fit_log=fit_log,
         warnings=warnings,
     )

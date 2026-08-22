@@ -57,11 +57,17 @@ import math
 
 import cadquery as cq
 
-from harness import feature
+from harness import feature, fit
 from parts import hcsr501, oring
 
 DESIGN_NAME = "pir_bezel"
 
+#: 寸法補正テーブル。PARAMS には狙い寸法だけを書き、図面寸法への変換はここが行う。
+FIT_TABLE = fit.ASA_P1S
+
+#: PARAMS はすべて **狙い寸法**（印刷後にこうなってほしい寸法）。
+#: 例: bore_dia 23.6 は「刷り上がったときに 23.6 であってほしい」という意味で、
+#: 図面に描かれるのは FIT_TABLE が返す 23.9 になる。
 PARAMS = {
     # 筐体壁（相手側。この部品には含まれない）
     "wall_t": 3.0,                  # 前提（wildlife-cam 本体の想定壁厚）
@@ -133,15 +139,21 @@ def screw_positions(p) -> list[tuple[float, float]]:
 
 
 def profile(p: dict) -> list[tuple[float, float]]:
-    """前板の回転断面 (半径, z)。z=0 が筐体壁に当たるシール面、-z が筐体内側."""
-    r_bore = p["bore_dia"] / 2
-    r_res = p["reservoir_dia"] / 2
-    r_plate = p["plate_dia"] / 2
+    """前板の回転断面 (半径, z)。z=0 が筐体壁に当たるシール面、-z が筐体内側.
+
+    寸法はすべて FIT_TABLE を通す。狙い寸法をそのまま描くと、内径が
+    0.30 mm 小さく刷り上がってボンドラインが 0.15 mm になってしまう。
+    """
+    f = FIT_TABLE
+    r_bore = f.hole(p["bore_dia"]) / 2
+    r_res = f.hole(p["reservoir_dia"]) / 2
+    r_plate = f.boss(p["plate_dia"]) / 2
     z_back = -p["plate_t"]
     z_res = -p["reservoir_depth"]
-    fg_in = p["face_groove_mean"] / 2 - p["face_groove_w"] / 2
-    fg_out = p["face_groove_mean"] / 2 + p["face_groove_w"] / 2
-    fg_d = p["face_groove_d"]
+    groove_w = f.uncompensated(p["face_groove_w"], "溝幅は未実測（v2 クーポンで測る）")
+    fg_in = p["face_groove_mean"] / 2 - groove_w / 2
+    fg_out = p["face_groove_mean"] / 2 + groove_w / 2
+    fg_d = f.uncompensated(p["face_groove_d"], "溝深さは未実測（v2 クーポンで測る）")
 
     return [
         (r_bore, z_back),
@@ -206,17 +218,22 @@ def build(p=PARAMS):
     )
     part = plate.union(body)
 
+    f = FIT_TABLE
     pocket = (
         cq.Workplane("XY")
-        .box(p["pcb_pocket_l"], p["pcb_pocket_w"], p["pocket_depth"] + 1.0,
-             centered=(True, True, False))
+        .box(
+            f.uncompensated(p["pcb_pocket_l"], "角ポケットの補正規則がテーブルに無い"),
+            f.uncompensated(p["pcb_pocket_w"], "角ポケットの補正規則がテーブルに無い"),
+            p["pocket_depth"] + 1.0,
+            centered=(True, True, False),
+        )
         .translate((0, 0, z_bottom - 1.0))
     )
     part = part.cut(pocket)
 
     for x, y in screw_positions(p):
         part = part.cut(
-            cq.Workplane("XY").circle(p["screw_dia"] / 2).extrude(p["plate_t"] + 2)
+            cq.Workplane("XY").circle(f.hole(p["screw_dia"]) / 2).extrude(p["plate_t"] + 2)
             .translate((x, y, z_back - 1.0))
         )
     return part

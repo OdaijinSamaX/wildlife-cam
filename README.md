@@ -96,6 +96,7 @@ harness/           ハーネス本体
   report.py        Markdown レポート
   component.py     内蔵部品を表す型
   feature.py       フィーチャの占有領域 (claim) を表す型と、その作り方
+  fit.py           寸法補正テーブル（実測から起こした造形の癖の吸収）
   checks/          7 つのチェック（下記）
 parts/             内蔵部品のダミー形状（BOM プリミティブ）
 designs/           設計スクリプト
@@ -110,6 +111,7 @@ docs/DECISIONS.md  設計判断の記録（不採用にした案も残す）・�
 
 | # | 名前 | 見るもの |
 |---|---|---|
+| 0 | fit | 寸法補正テーブルの素性と、どの寸法にいくら足したかの記録 |
 | 1 | manifold | 水密・多様体か（B-rep とメッシュの両方） |
 | 2 | wall | 最小肉厚（レイキャスト法）。薄い箇所は座標も出す |
 | 3 | bbox | 造形姿勢を適用したあと P1S の枠に収まるか |
@@ -147,7 +149,8 @@ uv run pytest -q
 
 | 設計 | 何のためか |
 |---|---|
-| `designs/wildlife_cam/fit_coupon.py` | 嵌合公差テーブルを 1 回の印刷で確定させる校正クーポン（120 x 90 x 20 mm）。手順は [fit_coupon.md](designs/wildlife_cam/fit_coupon.md) |
+| `designs/wildlife_cam/fit_coupon.py` | 公差校正クーポン v1。**2026-08-22 に印刷して実測済み**の実物の記録（凍結） |
+| `designs/wildlife_cam/fit_coupon_v2.py` | 同 v2。補正テーブルを通し、基準ピンを折り取り式の独立部品にした。実測値と導出は [fit_coupon.md](designs/wildlife_cam/fit_coupon.md) |
 | `designs/wildlife_cam/pir_bezel.py` | HC-SR501 を筐体壁に防水で貫通させるベゼル |
 
 どちらも **まだ印刷していない**。

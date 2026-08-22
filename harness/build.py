@@ -26,11 +26,13 @@ def export_all(ctx, out_dir: str | Path) -> dict[str, Path]:
     name = ctx.name
     written: dict[str, Path] = {}
 
+    # STEP は設計座標の「狙い形状」。人と CAD が読む正本。
     step = out_dir / f"{name}.step"
     cq.exporters.export(_wp(ctx.shape), str(step), ExportTypes.STEP)
     written["step"] = step
 
-    oriented = ctx.oriented_shape
+    # STL / 3MF は造形姿勢を適用した「補正済み形状」。スライサに渡す形。
+    oriented = ctx.oriented_print_shape
     stl = out_dir / f"{name}.stl"
     cq.exporters.export(
         _wp(oriented), str(stl), ExportTypes.STL,

@@ -65,6 +65,11 @@ def write_report(
     L.append(f"- 造形姿勢 (rotate): {_fmt(ctx.print_orientation.get('rotate', (0, 0, 0)))}")
     if render is not None:
         L.append(f"- レンダ方式: `{render.backend}`")
+    table = getattr(ctx, "fit", None)
+    if table is not None:
+        L.append(f"- 寸法補正テーブル: `{table.id}`（{table.provenance}）")
+    else:
+        L.append("- 寸法補正テーブル: **未宣言**")
     L.append("")
 
     L.append("## 判定サマリ")
@@ -89,6 +94,13 @@ def write_report(
         L.append("")
         for k, p in artifacts.items():
             L.append(f"- {k.upper()}: `{Path(p).name}`")
+        L.append("")
+        L.append(
+            "> STEP は**狙い形状**（印刷後にこうなってほしい形）。"
+            "STL と 3MF は造形姿勢を適用した**補正済み形状**で、"
+            "寸法補正テーブルぶんだけ狙い形状と違う。"
+            "チェックとレンダはすべて狙い形状を見ている。"
+        )
         L.append("")
 
     if render and render.files:
