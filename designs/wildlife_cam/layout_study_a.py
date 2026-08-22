@@ -47,7 +47,9 @@ from harness import feature, fit
 from parts import otg_cable, pi_zero_2w
 
 # 相対 import は使えない（load_design が単体モジュールとして読むため）
-from designs.wildlife_cam._layout_common import Hole, Layout, box, onyx_assembly
+from designs.wildlife_cam._layout_common import (
+    Hole, Layout, box, cam_window_center, onyx_assembly,
+)
 
 DESIGN_NAME = "layout_study_a"
 FIT_TABLE = fit.ASA_P1S
@@ -61,13 +63,18 @@ PRINT_ORIENTATION = {"rotate": (90, 0, 0)}
 
 def _layout(p=PARAMS) -> Layout:
     # 剛体ブロック 115.0 を X 方向に寝かせ、全部品を XZ 平面の 1 層に並べる。
+    # FPC は Pi のある +Z 側へ出す。レンズは基板中心から FPC 側へ 2.45 mm
+    # 寄っている（実測）ので、**窓はレンズ中心に合わせる**（基板中心ではない）。
+    _cam = box("cam", (72.0, 5.5, 52.0), "xzy",
+               note="レンズは基板中心から FPC 側へ 2.45 mm 寄る（実測）")
+    _win = cam_window_center(_cam, "+Z")
     boxes = onyx_assembly((120.0, 6.6, 17.9), "-X", "Z") + [
         box("pi", (89.5, 5.1, 85.0), "xzy", note="裏面が面一なので前板にべた置き"),
         box("otg_micro", (103.8, 3.4, 54.6), "zxy",
             note="データ口 (左角から 46.8) から -Z に 30.8 出る"),
         box("pir", (26.0, 11.35, 74.0), "xzy",
             note="前壁を貫くキャリア φ52 込み。Onyx のアンテナ端から 12 mm 離す"),
-        box("cam", (72.0, 5.5, 52.0), "xzy", note="CSI 未確定のため仮置き"),
+        _cam,
     ]
     routes = [{
         "name": "otg_flex",
@@ -79,7 +86,7 @@ def _layout(p=PARAMS) -> Layout:
         Hole("gland", "-Z", 107.0, 11.0, 12.6, "ケーブルグランド PG7（電源）"),
         Hole("pir", "-Y", 26.0, 74.0, 26.0, "PIR 貫通口"),
         Hole("vent", "-Z", 20.0, 11.0, 12.3, "防水通気ベント M12"),
-        Hole("cam_window", "-Y", 72.0, 52.0, 16.0, "カメラ窓（指示の 3 つには数えられていない）"),
+        Hole("cam_window", "-Y", _win[0], _win[2], 16.0, "カメラ窓（指示の 3 つには数えられていない）"),
     ]
     return Layout(boxes=boxes, holes=holes, routes=routes,
                   wall=p["wall"], clearance=p["clearance"],

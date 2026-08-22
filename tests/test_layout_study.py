@@ -107,3 +107,25 @@ def test_declared_contacts_are_only_mechanical_connections(letter):
         frozenset(("part_onyx_assembly", "otg_flex")),
     }
     assert allowed == expected
+
+
+# --- レンダに内蔵部品が入っていること ---------------------------------------
+
+
+@pytest.mark.parametrize("letter", CASES)
+def test_camera_window_is_centred_on_the_lens_not_the_board(letter):
+    """レンズは基板中心から FPC 側へ 2.45 mm 寄っている（実測）."""
+    from parts import cam_module3
+
+    lay = study(letter).LAYOUT
+    cam = [b for b in lay.boxes if b.name == "cam"][0]
+    win = [h for h in lay.holes if h.name == "cam_window"][0]
+    assert win.v - cam.center[2] == pytest.approx(cam_module3.LENS_OFFSET, abs=1e-9)
+    assert win.u == pytest.approx(cam.center[0], abs=1e-9)
+
+
+@pytest.mark.parametrize("letter", CASES)
+def test_flexible_cable_is_a_component_so_it_gets_rendered(letter):
+    names = [c.name for c in ctx(letter).components]
+    assert "otg_flex" in names, "柔軟部がレンダに出ない"
+    assert {"pi", "cam", "pir"} <= set(names)

@@ -106,17 +106,36 @@ def write_report(
     if render and render.files:
         L.append("## 外観")
         L.append("")
-        views = [f for f in render.files if not f.name.startswith("section_")]
-        secs = [f for f in render.files if f.name.startswith("section_")]
+        assy = list(getattr(render, "assembly_files", []) or [])
+        secs = list(getattr(render, "section_files", []) or [])
+        skip = {f.name for f in assy} | {f.name for f in secs}
+        views = [f for f in render.files if f.name not in skip]
         for f in views:
             L.append(f"### {f.stem}")
             L.append("")
             L.append(f"![{f.stem}](views/{f.name})")
             L.append("")
+        if assy:
+            L.append("## 内部の収まり（内蔵部品つき）")
+            L.append("")
+            L.append(
+                "外殻を半透明にして内蔵部品を色分けで重ねた図。色と名前の対応は"
+                "図の左上の凡例と、各部品の中心に置いたラベルで分かる。"
+            )
+            L.append("")
+            for f in assy:
+                L.append(f"### {f.stem}")
+                L.append("")
+                L.append(f"![{f.stem}](views/{f.name})")
+                L.append("")
+
         if secs:
             L.append("## 断面")
             L.append("")
-            L.append("防水筐体は溝と肉厚が中に隠れる。外観だけで判断しないこと。")
+            L.append(
+                "防水筐体は溝と肉厚が中に隠れる。外観だけで判断しないこと。"
+                "**外殻も内蔵部品も同じ面で切ってある**ので、部品の断面も見える。"
+            )
             L.append("")
             for f in secs:
                 L.append(f"### {f.stem}")

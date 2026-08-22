@@ -33,9 +33,11 @@ BOXES = {
     "otg_micro": (otg_cable.MICRO_L, otg_cable.MICRO_W, otg_cable.MICRO_H),
     # PIR は筐体壁を貫くので、キャリア（φ52 x 13.3）+ モジュール背面 9.4 を包む箱
     "pir": (52.0, 52.0, hcsr501.PCB_T + hcsr501.BACK_COMP_H + 13.3),
+    # レンズ前方に足すのは WINDOW_GAP（窓と前玉が触れないための逃げ）。
+    # このカメラに鏡筒は無く焦点は LensPosition で固定するので、調整代は要らない。
     "cam": (cam_module3.PCB_L, cam_module3.PCB_W,
             cam_module3.PCB_T + cam_module3.BACK_COMP_H + cam_module3.LENS_H
-            + cam_module3.FOCUS_GAP),
+            + cam_module3.WINDOW_GAP),
 }
 
 #: microSD カードの抜き差しに要る直線の逃げ（カード飛び出し 4.1 + 指の代 推定）
@@ -70,6 +72,19 @@ class Box:
     @property
     def hi(self):
         return tuple(c + s / 2 for c, s in zip(self.center, self.size))
+
+
+def cam_window_center(cam_box: "Box", fpc_dir: str) -> tuple[float, float, float]:
+    """カメラ窓の中心。**基板中心ではなくレンズ中心に合わせる。**
+
+    実測でレンズは基板中心から FPC が出ている辺の側へ 2.45 mm 寄っている
+    （`parts/cam_module3.LENS_OFFSET`）。基板中心に窓を開けると、その 2.45 mm
+    ぶん画角が偏る。fpc_dir は FPC が出ていく向き（"+Z" など）。
+    """
+    i, sign = FACES[fpc_dir]
+    c = list(cam_box.center)
+    c[i] += sign * cam_module3.LENS_OFFSET
+    return tuple(c)
 
 
 def onyx_assembly(origin: tuple[float, float, float], long_axis: str,
@@ -318,6 +333,15 @@ class Layout:
                 name=b.name, shape=b.solid(0.0),
                 envelope_fn=lambda c, _b=b: _b.solid(c),
                 notes=b.note, dimension_source="layout-study",
+            ))
+        for r in self.routes:
+            # 柔軟部のケーブルも実在する部品。レンダに出したいので Component にする。
+            solid = route_solid(r["points"], r["radius"])
+            out.append(Component(
+                name=r["name"], shape=solid,
+                envelope_fn=lambda c, _s=solid: _s,
+                notes="OTG ケーブル柔軟部（曲げ半径ぶんの太さで置いてある）",
+                dimension_source="layout-study",
             ))
         return out
 
