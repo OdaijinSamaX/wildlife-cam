@@ -13,10 +13,11 @@ Phase A: 筐体設計ハーネス MVP。CadQuery の設計スクリプトを
 
 ## Files changed
 
-- `harness/` — CLI / 設計ローダ / 形状変換 / エクスポート / レンダ / レポート / チェック 7 種
+- `harness/` — CLI / 設計ローダ / 形状変換 / エクスポート / レンダ / レポート / チェック 8 種
+  （`feature.py` + `checks/layout.py` は「単一ソリッド内のフィーチャの食い合い」用）
 - `parts/` — 内蔵部品ダミー 9 種
 - `designs/wildlife_cam/` — `fit_coupon.py` + 測定手順書、`pir_bezel.py`
-- `tests/test_checks_negative.py` — ネガティブテスト 14 件
+- `tests/test_checks_negative.py` — ネガティブテスト 23 件 + `tests/fixtures/`
 - `README.md` / `docs/AGENTS.md` / `docs/HARNESS.md`
 - `pyproject.toml` / `.python-version` / `uv.lock`
 
@@ -40,10 +41,10 @@ uv run pytest -q
 
 ## Expected behavior
 
-- `fit_coupon`: 総合 WARN（overhang が 3.3 mm2 の微小な下向き面を報告するだけ）
+- `fit_coupon`: 総合 PASS（120 x 90 x 20 mm）
 - `pir_bezel`: 総合 WARN（ラジアル O リング溝の片側ひさし 70.6 mm2 / 渡り幅 1 mm 未満）
 - `out/<design>/` に STEP / STL / 3MF と PNG 9 枚と `report.md`
-- `pytest`: 14 passed（約 2 分）
+- `pytest`: 23 passed（約 2 分 20 秒）
 
 ## Known risks / likely failures
 
@@ -56,7 +57,10 @@ uv run pytest -q
    ボクセル化）。`pytest` は約 2 分。
 4. **openings のボクセルピッチ**: 既定 0.5〜0.8 mm。細かくすると重くなる。
    `--pitch` で上書きできる。
-5. **`cq.Workplane.revolve` の軸はローカル座標系**。`"XZ"` ワークプレーンで
+5. **`cq.Face.positionAt(0.5, 0.5)` はトリムされた面の外に出ることがある**
+   （実測で板の外の z が返った）。円筒面上の代表点が要るときは
+   `geom.CylFace.probe_point()` を使う。
+6. **`cq.Workplane.revolve` の軸はローカル座標系**。`"XZ"` ワークプレーンで
    グローバル Z 軸まわりに回すには `(0,1,0)` を渡す。ここを間違えると体積 0 の
    板ができる（manifold チェックが検出する）。
 

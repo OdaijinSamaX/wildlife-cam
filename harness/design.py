@@ -12,6 +12,7 @@ import cadquery as cq
 
 from . import geom
 from .component import Component, coerce
+from .feature import Feature
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -33,6 +34,7 @@ class DesignContext:
     print_orientation: dict
     check_config: dict
     components: list[Component]
+    features: list[Feature]
     shape: cq.Shape
     raw: Any
     warnings: list[str] = field(default_factory=list)
@@ -134,6 +136,17 @@ def load_design(path: str | Path, params_override: dict | None = None) -> Design
     for c in components:
         warnings.extend(f"{c.name}: {w}" for w in c.warnings)
 
+    raw_features = getattr(module, "FEATURES", None)
+    if raw_features is None and hasattr(module, "features"):
+        raw_features = module.features(params)
+    features = list(raw_features or [])
+    bad = [f for f in features if not isinstance(f, Feature)]
+    if bad:
+        raise TypeError(
+            "FEATURES / features() は harness.feature.Feature を返すこと"
+            f"（{type(bad[0]).__name__} が混ざっています）"
+        )
+
     shape = geom.as_shape(raw)
     return DesignContext(
         name=getattr(module, "DESIGN_NAME", path.stem),
@@ -143,6 +156,7 @@ def load_design(path: str | Path, params_override: dict | None = None) -> Design
         print_orientation=print_orientation,
         check_config=check_config,
         components=components,
+        features=features,
         shape=shape,
         raw=raw,
         warnings=warnings,

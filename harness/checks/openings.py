@@ -34,40 +34,16 @@ PROBE_INSET_MM = 0.2
 SWEEP_RADII_MM = (0.25, 0.4, 0.6, 0.8, 1.0, 1.5, 2.0, 3.0, 5.0, 8.0)
 
 
-def _axial_extent(faces, base, axis):
-    """円筒面の軸方向の範囲。面の頂点（両端の円）を軸に射影して求める."""
-    pts = []
-    for f in faces:
-        for v in f.Vertices():
-            pts.append([v.X, v.Y, v.Z])
-    if not pts:  # 頂点が無い（閉じた円筒）ときはバウンディングボックスで代用
-        for f in faces:
-            bb = f.BoundingBox()
-            pts += [
-                [x, y, z]
-                for x in (bb.xmin, bb.xmax)
-                for y in (bb.ymin, bb.ymax)
-                for z in (bb.zmin, bb.zmax)
-            ]
-    t = (np.array(pts, dtype=float) - base) @ axis
-    return float(t.min()), float(t.max())
-
-
 def _brep_openings(shape, min_dia):
     cyls = geom.merge_coaxial(geom.internal_cylinders(shape, min_dia=min_dia))
     rows = []
     for i, c in enumerate(cyls):
         axis = np.array(c.axis, dtype=float)
         base = np.array(c.axis_point, dtype=float)   # 軸上の点
-        t_lo, t_hi = _axial_extent(c.faces, base, axis)
+        t_lo, t_hi = c.axial_extent()
         # 軸上ではなく「穴の内壁のすぐ内側」で探る。軸上だと、貫通穴の中に
         # 掘った O リング溝まで貫通扱いになってしまう。
-        on_face = np.array(c.center, dtype=float)
-        radial = (on_face - base) - np.dot(on_face - base, axis) * axis
-        nr = np.linalg.norm(radial)
-        radial = radial / nr if nr > 1e-9 else np.zeros(3)
-        probe_r = max(c.radius - PROBE_INSET_MM, 0.0)
-        offset = radial * probe_r
+        offset = c.radial_dir() * max(c.radius - PROBE_INSET_MM, 0.0)
         p_lo = base + (t_lo - AXIS_PROBE_MM) * axis + offset
         p_hi = base + (t_hi + AXIS_PROBE_MM) * axis + offset
         lo_solid = geom.point_inside(shape, p_lo)
@@ -80,7 +56,7 @@ def _brep_openings(shape, min_dia):
                 "diameter_mm": round(c.diameter, 3),
                 "aperture_mm2": round(np.pi * c.radius**2, 2),
                 "axis": tuple(round(float(v), 2) for v in axis),
-                "center": tuple(round(float(v), 1) for v in np.array(c.center)),
+                "center": tuple(round(float(v), 1) for v in c.probe_point(c.radius)),
                 "through": through,
             }
         )

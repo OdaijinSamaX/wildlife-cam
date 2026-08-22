@@ -19,6 +19,7 @@ from harness.design import load_design
 ROOT = Path(__file__).resolve().parent.parent
 COUPON = ROOT / "designs" / "wildlife_cam" / "fit_coupon.py"
 BEZEL = ROOT / "designs" / "wildlife_cam" / "pir_bezel.py"
+UNCLAIMED = ROOT / "tests" / "fixtures" / "unclaimed_hole.py"
 
 
 def result(path, only, override=None):
@@ -32,8 +33,9 @@ def result(path, only, override=None):
 
 
 @pytest.mark.parametrize("path,check", [
-    (COUPON, "wall"), (COUPON, "bbox"), (COUPON, "openings"),
-    (BEZEL, "wall"), (BEZEL, "clearance"), (BEZEL, "openings"),
+    (COUPON, "wall"), (COUPON, "bbox"), (COUPON, "openings"), (COUPON, "layout"),
+    (COUPON, "overhang"),
+    (BEZEL, "wall"), (BEZEL, "clearance"), (BEZEL, "openings"), (BEZEL, "layout"),
 ])
 def test_baseline_designs_pass(path, check):
     r = result(path, check)
@@ -129,3 +131,65 @@ def test_overhang_reacts_to_print_orientation():
 
     assert tilted.measurements["flagged_area_mm2"] > flat.measurements["flagged_area_mm2"]
     assert tilted.status == FAIL, tilted.summary
+
+
+# --- 6. 単一ソリッド内のフィーチャの食い合い -> layout が FAIL ---------------
+#
+# 実際に出た不具合の再現。初版の fit_coupon では O リング溝の帯が基準ピン
+# φ10.0 の根元を 0.95 mm 削っていた。interference は別ソリッド同士しか見ず、
+# openings は溝を止まり穴としか見ないので、どちらにも掛からなかった。
+
+
+def test_layout_fails_when_groove_undercuts_the_reference_pin():
+    r = result(COUPON, "layout", {"oring_cx": 16.0, "oring_cy": -8.0})
+    assert r.status == FAIL, r.summary
+    pairs = {frozenset((row["a"], row["b"])) for row in r.table}
+    assert frozenset(("shaft_ref_pin", "oring_groove")) in pairs, r.table
+    hit = next(row for row in r.table
+               if {row["a"], row["b"]} == {"shaft_ref_pin", "oring_groove"})
+    assert hit["overlap_mm3"] > 1.0
+
+
+def test_layout_catches_undercut_even_though_z_ranges_of_the_solids_differ():
+    """ピン (z=8..20) と溝 (z=6.5..8) は体積が重ならない.
+
+    claim を「フィーチャが所有すべき材料領域」として宣言しているからこそ
+    捕まる、という規約そのもののテスト。
+    """
+    ctx = load_design(COUPON, params_override={"oring_cx": 16.0, "oring_cy": -8.0})
+    pin = next(f for f in ctx.features if f.name == "shaft_ref_pin")
+    groove = next(f for f in ctx.features if f.name == "oring_groove")
+    # ピンの実体は板の上にしか無い
+    assert pin.bbox.zmin < 1e-6          # claim は板の底まで伸びている
+    assert groove.bbox.zmax <= ctx.params["plate_t"] + 1e-6
+    assert pin.region.intersect(groove.region).Volume() > 1.0
+
+
+def test_layout_fails_when_screws_bite_into_the_face_seal_groove():
+    """ベゼルのねじピッチを詰めると、取付ねじがフェイス O リング溝を食う."""
+    r = result(BEZEL, "layout", {"screw_pcd": 42.0})
+    assert r.status == FAIL, r.summary
+    pairs = {frozenset((row["a"], row["b"])) for row in r.table}
+    assert any("face_oring_groove" in pair and any(n.startswith("screw_") for n in pair)
+               for pair in pairs), r.table
+
+
+def test_layout_detects_an_undeclared_hole():
+    r = result(UNCLAIMED, "layout")
+    assert r.status == FAIL, r.summary
+    assert r.measurements["unclaimed_holes"] == 1
+    assert any("宣言し忘れ" in row["note"] for row in r.table)
+
+
+def test_layout_passes_when_every_hole_is_declared():
+    r = result(UNCLAIMED, "layout", {"declare_both": True})
+    assert r.status != FAIL, r.summary
+    assert r.measurements["unclaimed_holes"] == 0
+
+
+def test_layout_warns_when_nothing_is_declared():
+    """宣言が無いときは黙って PASS せず WARN にする（気づかせるため）."""
+    ctx = load_design(UNCLAIMED)
+    ctx.features = []
+    r = run_all(ctx, only=["layout"])[0]
+    assert r.status == "WARN", r.summary

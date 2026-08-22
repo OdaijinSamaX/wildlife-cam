@@ -33,8 +33,11 @@
   - 筐体壁の厚み 3.0 mm は wildlife-cam 本体設計の前提であって、まだ確定していない。
 """
 
+import math
+
 import cadquery as cq
 
+from harness import feature
 from parts import hcsr501
 
 DESIGN_NAME = "pir_bezel"
@@ -66,6 +69,7 @@ PARAMS = {
     "screw_dia": 3.4,              # fit_coupon で確定させる（暫定 3.4）
     "screw_count": 4,              # 設計値
     "min_wall": 1.6,               # 設計方針（ASA / 0.4 mm ノズル / 壁 4 本）
+    "feature_margin": 0.8,         # min_wall / 2。layout チェックのフィーチャ間マージン
 }
 
 PRINT_ORIENTATION = {"rotate": (180, 0, 0)}
@@ -138,6 +142,55 @@ def profile(p: dict) -> list[tuple[float, float]]:
     ]
 
 
+def features(p=PARAMS):
+    """フィーチャの占有領域。規約は harness/feature.py の docstring.
+
+    内径まわり（座ぐり / ラジアル溝 / 面取り）は**同軸に積み上がっていて互いに
+    接するのが正しい**ので、ひとつの円柱 `bore_column` としてまとめて claim する。
+    別々に宣言すると、意図した連続を「食い合い」として誤検出してしまう。
+
+    横方向に並ぶ取付ねじとフェイス O リング溝は、まさにここで距離を保証したい
+    組み合わせなので、別々に宣言する。
+    """
+    m = p["feature_margin"]
+    r_ch = p["bore_dia"] / 2 + (p["flange_t"] - p["chamfer_start_z"])
+    out = [
+        feature.cylinder(
+            "bore_column",
+            (0.0, 0.0),
+            2 * r_ch,
+            -p["spigot_len"],
+            p["flange_t"],
+            margin=m,
+            note="内径の同軸スタック（座ぐり / ラジアル溝 / ボア / 面取り）",
+        ),
+        feature.ring(
+            "face_oring_groove",
+            (0.0, 0.0),
+            p["face_groove_mean"],
+            p["face_groove_w"],
+            0.0,
+            p["face_groove_d"] + p["min_wall"],
+            margin=m,
+            note="フェイス O リング溝（溝 + 上に残す肉）",
+        ),
+    ]
+    n = int(p["screw_count"])
+    r = p["screw_pcd"] / 2
+    for i in range(n):
+        a = 2 * math.pi * i / n
+        out.append(feature.cylinder(
+            f"screw_{i}",
+            (r * math.cos(a), r * math.sin(a)),
+            p["screw_dia"],
+            0.0,
+            p["flange_t"],
+            margin=m,
+            note="M3 取付ねじ（貫通）",
+        ))
+    return out
+
+
 def build(p=PARAMS):
     pts = profile(p)
     body = (
@@ -149,8 +202,6 @@ def build(p=PARAMS):
     holes = cq.Workplane("XY")
     n = int(p["screw_count"])
     r = p["screw_pcd"] / 2
-    import math
-
     for i in range(n):
         a = 2 * math.pi * i / n
         holes = holes.union(

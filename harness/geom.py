@@ -234,6 +234,46 @@ class CylFace:
     def diameter(self) -> float:
         return 2.0 * self.radius
 
+    def axial_extent(self) -> tuple[float, float]:
+        """軸方向の範囲。面の頂点（両端の円）を軸に射影して求める."""
+        base = np.array(self.axis_point, dtype=float)
+        axis = np.array(self.axis, dtype=float)
+        pts = []
+        for f in self.faces:
+            for v in f.Vertices():
+                pts.append([v.X, v.Y, v.Z])
+        if not pts:  # 頂点が無い（閉じた円筒）ときはバウンディングボックスで代用
+            for f in self.faces:
+                bb = f.BoundingBox()
+                pts += [
+                    [x, y, z]
+                    for x in (bb.xmin, bb.xmax)
+                    for y in (bb.ymin, bb.ymax)
+                    for z in (bb.zmin, bb.zmax)
+                ]
+        t = (np.array(pts, dtype=float) - base) @ axis
+        return float(t.min()), float(t.max())
+
+    def radial_dir(self) -> np.ndarray:
+        """軸から面へ向かう単位ベクトル."""
+        base = np.array(self.axis_point, dtype=float)
+        axis = np.array(self.axis, dtype=float)
+        on_face = np.array(self.center, dtype=float)
+        radial = (on_face - base) - np.dot(on_face - base, axis) * axis
+        n = np.linalg.norm(radial)
+        return radial / n if n > 1e-9 else np.zeros(3)
+
+    def probe_point(self, inset: float = 0.0) -> np.ndarray:
+        """面の軸方向中央、半径 (r - inset) の点.
+
+        `center` は positionAt(0.5, 0.5) なので、トリムされた面の外に出ることが
+        ある（実測で z が板の外に出た）。位置を問う用途にはこちらを使う。
+        """
+        base = np.array(self.axis_point, dtype=float)
+        axis = np.array(self.axis, dtype=float)
+        t0, t1 = self.axial_extent()
+        return base + 0.5 * (t0 + t1) * axis + self.radial_dir() * max(self.radius - inset, 0.0)
+
 
 def internal_cylinders(shape: cq.Shape, min_dia: float = 0.5) -> list[CylFace]:
     """材料が外側にある（= 穴の内壁である）円筒面を拾う."""
