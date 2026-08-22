@@ -73,11 +73,12 @@ def run_all(ctx, only: Iterable[str] | None = None) -> list[CheckResult]:
 
 
 from . import (  # noqa: E402,F401
-    bbox, clearance, fit, interference, layout, manifold, openings, overhang, wall,
+    bbox, clearance, fit, fov, interference, layout, manifold, openings,
+    overhang, wall,
 )
 
 #: レポートに出す順序（登録順ではなく意味の順）
 ORDER[:] = [
     "fit", "manifold", "wall", "bbox", "interference", "layout",
-    "clearance", "overhang", "openings",
+    "clearance", "overhang", "openings", "fov",
 ]

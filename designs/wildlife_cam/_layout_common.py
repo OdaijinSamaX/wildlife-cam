@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 
 import cadquery as cq
 
-from harness import feature
+from harness import feature, geom
 from harness.component import Component
 from parts import cam_module3, hcsr501, otg_cable, pi_zero_2w, soracom_onyx
 
@@ -42,6 +42,17 @@ BOXES = {
 
 #: microSD カードの抜き差しに要る直線の逃げ（カード飛び出し 4.1 + 指の代 推定）
 SD_SERVICE_MM = 4.1 + 20.0
+
+# --- 設置対象（現地写真から確定・2026-08-22） -------------------------------
+#: 幹の円周 15〜20 cm -> 直径。**桁が違うので平面の背板では線接触にしかならない。**
+TRUNK_DIA_MIN = 48.0
+TRUNK_DIA_MAX = 64.0
+#: ASA の密度。概算質量に使う。
+ASA_DENSITY_G_CM3 = 1.07
+#: 部品の実測質量（分かっているものだけ）。
+PART_MASS_G = {"assy_onyx": 36.0, "assy_onyx_thin": 0.0, "assy_usba": 0.0,
+               "pi": 10.0, "otg_micro": 0.0, "otg_flex": 20.0,
+               "pir": 8.0, "cam": 4.0}
 
 #: Onyx は内蔵アンテナ 1 本で使うと決まった（外部 CRC9 は使わない）。
 #: そのぶん **壁際に置き、金属と他の基板を近づけない**配置ルールが要る。
@@ -245,6 +256,12 @@ class Layout:
     #: 蓋になる面。ここは壁を作らない（本体だけを build する）。
     #: 閉じた箱のまま刷ることはできないので、必ずどこかを開ける。
     open_face: str = "+Y"
+    #: 背面に彫る鞍（幹に座る V 溝）。幅 / 深さ / ベルト溝の幅・深さ・位置。
+    saddle: bool = True
+    saddle_w: float = 44.0
+    saddle_d: float = 16.0
+    belt_w: float = 30.0      # 何重にも巻ける幅
+    belt_extra_d: float = 3.0  # 鞍の面よりさらに深く彫る量
     wall: float = 3.0
     clearance: float = 1.0        # 部品まわりの一律すきま
     inner_margin: float = 2.0     # キープアウトの外側に取る空き
@@ -262,8 +279,18 @@ class Layout:
         return tuple(min(v) for v in los), tuple(max(v) for v in his)
 
     def outer(self):
+        """外形。鞍を彫るぶんの肉を背面に足す（鞍は奥行きのコスト）."""
         lo, hi = self.cavity()
-        return (tuple(v - self.wall for v in lo), tuple(v + self.wall for v in hi))
+        olo = [v - self.wall for v in lo]
+        ohi = [v + self.wall for v in hi]
+        if self.saddle:
+            i = FACES[self.open_face][0]
+            sign = FACES[self.open_face][1]
+            if sign > 0:
+                ohi[i] += self.saddle_d
+            else:
+                olo[i] -= self.saddle_d
+        return (tuple(olo), tuple(ohi))
 
     def outer_size(self) -> tuple[float, float, float]:
         lo, hi = self.outer()
@@ -309,6 +336,9 @@ class Layout:
         shape = shape.cut(cq.Solid.makeBox(
             *(b - a for a, b in zip(cut_lo, cut_hi)), cq.Vector(*cut_lo)))
 
+        if self.saddle:
+            shape = shape.cut(self._saddle_cutter())
+
         for h in self.holes:
             d = table.hole(h.dia)
             i, _a, _b = h.plane_axes()
@@ -324,6 +354,79 @@ class Layout:
                 )
             )
         return cq.Workplane("XY").newObject([shape])
+
+    def _saddle_cutter(self) -> cq.Shape:
+        """背面の V 溝 + ベルト溝。幹の軸は Z 方向（縦）に立つものとする."""
+        olo, ohi = self.outer()
+        i = FACES[self.open_face][0]
+        back = ohi[i] if FACES[self.open_face][1] > 0 else olo[i]
+        cx = (olo[0] + ohi[0]) / 2
+        zlo, zhi = olo[2], ohi[2]
+        depth = self.saddle_d
+        half = self.saddle_w / 2
+
+        # V 溝（背面から depth だけ食い込む三角柱。幹の軸 = Z に沿って通す）
+        pts = [(cx - half, back), (cx + half, back),
+               (cx, back - depth if i == 1 else back)]
+        if i != 1:
+            raise ValueError("鞍は背面 (+Y/-Y) にしか彫れない")
+        v = (
+            cq.Workplane("XY")
+            .polyline([(x, y) for x, y in pts]).close()
+            .extrude(zhi - zlo + 2).translate((0, 0, zlo - 1))
+        )
+        cutter = geom.as_shape(v)
+
+        # ベルト溝: 上下 2 本。鞍の面よりさらに深く、幅は何重にも巻ける寸法
+        span = zhi - zlo
+        for frac in (0.25, 0.75):
+            zc = zlo + span * frac
+            pts2 = [(cx - half, back), (cx + half, back),
+                    (cx, back - depth - self.belt_extra_d)]
+            belt = (
+                cq.Workplane("XY")
+                .polyline([(x, y) for x, y in pts2]).close()
+                .extrude(self.belt_w).translate((0, 0, zc - self.belt_w / 2))
+            )
+            cutter = cutter.fuse(geom.as_shape(belt))
+        return cutter.clean()
+
+    # --- 取り付けの評価 ---
+    def mount_metrics(self, shell_volume_mm3: float | None = None) -> dict:
+        """細い幹に付けたときの効きを数字で出す."""
+        sx, sy, sz = self.outer_size()
+        olo, ohi = self.outer()
+        wind = sx * sz                      # 前面投影面積（受風面積）
+        overhang = (sx - TRUNK_DIA_MIN) / 2  # 幹の左右への張り出し
+        # 重心の代表点: 部品の質量で重み付けした重心
+        num = [0.0, 0.0, 0.0]
+        den = 0.0
+        for b in self.boxes:
+            mass = PART_MASS_G.get(b.name, 5.0)
+            den += mass
+            for k in range(3):
+                num[k] += mass * b.center[k]
+        cog = [n / den for n in num] if den else [0, 0, 0]
+        i = FACES[self.open_face][0]
+        back = ohi[i] if FACES[self.open_face][1] > 0 else olo[i]
+        # 幹の中心は鞍の底からさらに外側
+        trunk_axis = back + TRUNK_DIA_MIN / 2 if FACES[self.open_face][1] > 0 \
+            else back - TRUNK_DIA_MIN / 2
+        out = {
+            "前面投影面積 (cm2)": round(wind / 100.0, 1),
+            "幹からの横張り出し 片側 (mm)": round(overhang, 1),
+            "鞍の接触長 = 縦の寸法 (mm)": round(sz, 1),
+            "受風面積 / 接触長 (mm)": round(wind / sz, 1),
+            "重心-幹軸 距離 (mm)": round(abs(cog[i] - trunk_axis), 1),
+            "部品質量 合計 (g)": round(den, 1),
+        }
+        if shell_volume_mm3:
+            shell_g = shell_volume_mm3 / 1000.0 * ASA_DENSITY_G_CM3
+            out["外殻の概算質量 (g)"] = round(shell_g, 1)
+            out["総質量の目安 (g)"] = round(shell_g + den, 1)
+            out["転倒モーメントの目安 (g x mm)"] = round(
+                (shell_g + den) * out["重心-幹軸 距離 (mm)"], 0)
+        return out
 
     # --- 宣言 ---
     def components(self) -> list[Component]:
@@ -446,6 +549,7 @@ class Layout:
             "合わせ面の周長 (mm)": self.seam_perimeter(),
         }
         out.update(self.antenna_metrics())
+        out.update(self.mount_metrics())
         for r in self.routes:
             dev = max_bend_deviation(r["points"])
             out[f"{r['name']} 経路長 (mm)"] = round(route_length(r["points"]), 1)

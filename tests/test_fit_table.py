@@ -174,7 +174,12 @@ def test_v2_reference_pin_can_be_broken_off():
         cq.Vector(bb.xmin - 1, bb.ymin - 1, bb.zmin - 0.01),
     )
     broken = ctx.shape.cut(tab_zone)
-    assert len(broken.Solids()) == 2, "タブを折ってもピンが分離しない"
+    # 台座 1 + 基準ピン 1 + スライド嵌合のレール 4 = 6
+    solids = len(broken.Solids())
+    assert solids == 2 + len(p["slide_gaps"]), (
+        f"タブを折ったあとのソリッド数が {solids}。"
+        "基準ピンとスライドレールが台座から分離していない"
+    )
 
 
 def test_v2_break_off_tab_is_thin_enough_to_snap():
@@ -192,3 +197,42 @@ def test_v2_pin_clears_its_socket_after_compensation():
     p = ctx.params
     gap = (f.hole(p["pin_socket_dia"]) - f.boss(p["pin_dia"])) / 2
     assert gap > 2.0, f"ソケットとピンの片側すきま {gap} mm"
+
+
+# --- スライド嵌合の試験（角形状の補正は丸穴と別物） -------------------------
+
+
+def test_v2_has_slide_fit_coupons_with_four_gaps():
+    """丸穴の補正値が角形状に効く保証が無いので、隙間を振った試験を持つこと."""
+    ctx = load_design(COUPON_V2)
+    gaps = ctx.params["slide_gaps"]
+    assert gaps == (0.2, 0.3, 0.4, 0.5)
+    names = {f.name for f in ctx.features}
+    for g in gaps:
+        assert f"slide_{g:.1f}_recv" in names
+        assert f"slide_{g:.1f}_rail" in names
+
+
+def test_v2_slide_rails_are_separate_pieces():
+    """レールが受けと一体だと嵌めて確かめられない（v1 の基準ピンと同じ失敗）."""
+    import cadquery as cq
+
+    ctx = load_design(COUPON_V2)
+    p = ctx.params
+    bb = ctx.shape.BoundingBox()
+    tab_zone = cq.Solid.makeBox(
+        bb.xlen + 2, bb.ylen + 2, p["tab_h"] + 0.05,
+        cq.Vector(bb.xmin - 1, bb.ymin - 1, bb.zmin - 0.01),
+    )
+    assert len(ctx.shape.cut(tab_zone).Solids()) >= 1 + len(p["slide_gaps"])
+
+
+def test_v2_dovetail_flank_is_printable_without_support():
+    """アリのフランクが 45 度以下ならサポートが要らない."""
+    import math
+
+    ctx = load_design(COUPON_V2)
+    p = ctx.params
+    flank = (p["slide_base_w"] - p["slide_top_w"]) / 2
+    angle = math.degrees(math.atan(flank / p["slide_depth"]))
+    assert angle <= 45.0 + 1e-9, f"フランクが {angle:.1f} 度で立ちすぎ"

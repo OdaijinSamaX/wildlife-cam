@@ -52,6 +52,9 @@ FPC が出ている辺まで   8.6 mm
   - `WINDOW_GAP = 1.0` — AF の軸方向ストロークを実測していない。前玉が動いても
     窓に触れない最小限として置いた値であって、根拠のある値ではない。
   - FPC が出ている辺を -Y と定義している（`FPC_EDGE`）。実装時の向きは設計側で決める。
+  - **CSI コネクタの幅・奥行き・位置（`CSI_W` / `CSI_D` / `CSI_Y`）は推定。**
+    高さ 3.0 だけが実測。取付ボスと干渉するかどうかがここで決まるので、
+    実測が入ったら `window_snoot` の `boss_dia` を見直すこと。
 """
 
 import cadquery as cq
@@ -72,6 +75,14 @@ LENS_H = 7.6        # 実測 2026-08-22（基板表面からレンズ前面ま�
 LENS_OFFSET = 2.45  # 実測からの導出（(13.5 - 8.6) / 2）。docstring 参照
 CSI_H = 3.0         # 実測 2026-08-22（基板裏の CSI コネクタ高さ）
 BACK_COMP_H = CSI_H  # 基板裏で最も高いのが CSI コネクタなので同値
+CSI_W = 14.0        # 推定（要実測）: CSI コネクタの幅
+CSI_D = 5.5         # 推定（要実測）: CSI コネクタの奥行き
+CSI_Y = -7.0        # 推定（要実測）: FPC が出る辺 (-Y) 寄りの位置
+#: 取付ボスが入る柱の直径。envelope からはこの柱を抜く（意図した接触なので）。
+MOUNT_COLUMN_DIA = 6.2
+#: envelope が実体を完全には包まないことを宣言する。取付穴の柱を抜いてあるため、
+#: 基板の一部（穴の周囲）が envelope の外に出る。**意図した接触**である。
+ENVELOPE_INTENTIONAL_CONTACT = True
 
 #: FPC が出ている辺。レンズはこちら側へ LENS_OFFSET だけ寄っている。
 FPC_EDGE = "-Y"
@@ -83,6 +94,39 @@ WINDOW_GAP = 1.0
 
 #: 焦点はソフトウェアで固定する。機械的な調整代は不要。
 FOCUS_IS_SOFTWARE_FIXED = True
+
+# --- 光学諸元（**要検証**。根拠は docs/window-options.md） -------------------
+# 出所はメーカーの公表値とされる数字で、実機で測ってはいない。
+# 変えられるようにパラメータ化してある。ここが違えば窓と筒の形も変わる。
+FOCAL_LENGTH_MM = 4.74   # 要検証
+SENSOR_DIAG_MM = 7.4     # 要検証（約 7.4）
+HFOV_DEG = 66.0          # 要検証（約 66 度）
+VFOV_DEG = 41.0          # 要検証（約 41 度）
+DFOV_DEG = 75.0          # 要検証（約 75 度）
+
+
+def half_angle_deg(focal: float | None = None, diag: float | None = None) -> float:
+    """対角の半画角。焦点距離とセンサ対角から導出する.
+
+    atan((7.4 / 2) / 4.74) = 37.98 度 -> 対角 75.96 度。
+    公表値の「約 75 度」（半角 37.5）とほぼ一致するので、両者に矛盾は無い。
+    判定には導出値を使う（公表値より 0.5 度広い = 安全側）。
+    """
+    import math
+
+    f = FOCAL_LENGTH_MM if focal is None else focal
+    d = SENSOR_DIAG_MM if diag is None else diag
+    return math.degrees(math.atan((d / 2) / f))
+
+
+def max_straight_tube_length(inner_radius: float) -> float:
+    """内半径 r の**真っ直ぐな筒**が視野を遮らない最大長 L = r / tan(半角).
+
+    半角 37.98 度なら L < 1.281 r。**細長い筒は成立しない。**
+    """
+    import math
+
+    return inner_radius / math.tan(math.radians(half_angle_deg()))
 
 
 def hole_positions() -> list[tuple[float, float]]:
@@ -116,10 +160,12 @@ def model() -> cq.Workplane:
         .box(LENS_SIZE, LENS_SIZE, LENS_H, centered=(True, True, False))
         .translate((lx, ly, 0))
     )
+    # 裏面で最も高いのは CSI コネクタだけ。板全面を塞いでいるわけではないので、
+    # コネクタぶんの箱だけ置く（取付ボスを立てる余地を残すため）。
     back = (
         cq.Workplane("XY")
-        .box(PCB_L - 3, PCB_W - 3, BACK_COMP_H, centered=(True, True, False))
-        .translate((0, 0, -PCB_T - BACK_COMP_H))
+        .box(CSI_W, CSI_D, BACK_COMP_H, centered=(True, True, False))
+        .translate((0, CSI_Y, -PCB_T - BACK_COMP_H))
     )
     return pcb.union(lens).union(back)
 
@@ -128,9 +174,17 @@ def envelope(clearance: float = 0.0) -> cq.Workplane:
     """外形 + clearance。レンズ前方は WINDOW_GAP だけ空ける（調整代ではない）."""
     c = clearance
     h = PCB_T + BACK_COMP_H + LENS_H + WINDOW_GAP + 2 * c
-    return cq.Workplane("XY").box(
+    env = cq.Workplane("XY").box(
         PCB_L + 2 * c, PCB_W + 2 * c, h, centered=(True, True, False)
     ).translate((0, 0, -PCB_T - BACK_COMP_H - c))
+    # 取付穴の柱は「意図した接触」なので keep-out から抜く。
+    # 抜かないと、正しく立てたボスが clearance FAIL になる。
+    for x, y in hole_positions():
+        env = env.cut(
+            cq.Workplane("XY").circle(MOUNT_COLUMN_DIA / 2).extrude(h + 2)
+            .translate((x, y, -PCB_T - BACK_COMP_H - c - 1))
+        )
+    return env
 
 
 ENVELOPE = envelope(0.5)

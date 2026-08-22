@@ -23,11 +23,18 @@ def test_every_part_builds_a_closed_solid(mod):
 
 @pytest.mark.parametrize("mod", parts.ALL, ids=lambda m: m.__name__.split(".")[-1])
 def test_envelope_contains_the_model(mod):
-    """envelope は実体を包んでいること（clearance チェックが成り立つ前提）."""
+    """envelope は実体を包んでいること（clearance チェックが成り立つ前提）.
+
+    `ENVELOPE_INTENTIONAL_CONTACT` を立てた部品だけは例外。取付ボスが入る柱を
+    envelope から抜いているので、その周囲だけ実体がはみ出る（意図した接触）。
+    """
     model = geom.as_shape(mod.model())
     env = geom.as_shape(mod.envelope(0.5))
     outside = model.cut(env)
     vol = 0.0 if outside is None else float(outside.Volume())
+    if getattr(mod, "ENVELOPE_INTENTIONAL_CONTACT", False):
+        assert vol > 0.0, "例外を宣言しているのに、はみ出しが無い（宣言が不要）"
+        return
     assert vol < 1e-3, f"{mod.__name__}: 実体が envelope からはみ出している ({vol} mm3)"
 
 

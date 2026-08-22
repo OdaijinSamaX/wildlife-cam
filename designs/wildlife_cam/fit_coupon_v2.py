@@ -21,7 +21,22 @@ v2 ではピンを台座から独立させ、台座を貫く φ18.0 のソケッ
   - ピンの軸は軸穴と同じく造形方向に平行。**同じ向きで刷ったもの同士**を
     嵌合させるので、比較に意味がある。
 
-### 2. 寸法補正テーブルを通した
+### 2. スライド嵌合の試験を追加した（v2 の 2 回目の改訂）
+
+補正値 **穴 +0.30 / 突起 +0.25 は丸穴と丸棒で取った値**で、レールやアリ溝の
+ような**角形状にそのまま効く保証が無い**（形状が違う）。そこで隙間を変えた
+アリ溝 4 段（+0.2 / +0.3 / +0.4 / +0.5）を足した。
+
+**レールは受けと別部品**にして、台座を貫く抜き穴の中にビルドプレートから
+立て、底の折り取りタブだけで繋いである。摺動面に折り跡が残らず、
+下向きの張り出しも出ない。
+折り取ってから実際に嵌めれば「スッと入りガタつかない」隙間が分かる。
+v1 で基準ピンが台座と一体で挿せなかった失敗を繰り返さない。
+
+アリの断面は 底 12.0 / 開口 8.0 / 深さ 2.0 で、**フランクが 45 度**になるので
+サポートが要らない。溝は上向きに開くので摺動面が積層に対して素直に出る。
+
+### 3. 寸法補正テーブルを通した
 
 PARAMS には **狙い寸法**（印刷後にこうなってほしい寸法）だけを書く。
 `FIT_TABLE` が図面寸法へ変換する。設計側で 0.3 を足し引きしない。
@@ -39,6 +54,7 @@ PARAMS には **狙い寸法**（印刷後にこうなってほしい寸法）�
   - 薄板の実効肉厚               (0.8 / 1.2 / 1.6 / 2.0)
   - O リング溝の実寸             (φ2.0 コード / 溝 2.70 x 1.50)
   - 軸穴嵌合                     (基準ピン φ10.0 に対し φ10.1 / 10.2 / 10.3 / 10.4)
+  - **スライド嵌合**             (アリ溝の隙間 +0.2 / +0.3 / +0.4 / +0.5)
 
 ## 未確定事項
 
@@ -65,8 +81,8 @@ FIT_TABLE = fit.ASA_P1S
 
 PARAMS = {
     # 台座
-    "plate_l": 120.0,
-    "plate_w": 90.0,
+    "plate_l": 170.0,            # スライド嵌合の試験を足したので拡大（旧 120.0）
+    "plate_w": 160.0,            # 旧 90.0
     "plate_t": 8.0,
     # ヒートセット下穴（止まり穴）— 狙い寸法
     "heatset_dias": (4.0, 4.2, 4.4),
@@ -104,13 +120,31 @@ PARAMS = {
     "fin_y": -19.0,
     "fin_x0": -52.0,
     "fin_pitch": 14.0,
-    "fin_label_y": -29.0,
+    "fin_label_y": -24.0,
     # O リング溝
     "oring_mean_dia": 30.0,
     "oring_groove_w": oring.GROOVE_WIDTH,
     "oring_groove_d": oring.GROOVE_DEPTH,
-    "oring_cx": 38.0,
-    "oring_cy": -26.0,
+    "oring_cx": 52.0,
+    "oring_cy": -10.0,
+    # スライド嵌合の試験（角形状。丸穴の補正値がそのまま効く保証が無いので測る）
+    # 公称: アリ溝 底 12.0 / 開口 8.0 / 深さ 2.0（フランク 45 度 = サポート不要）
+    "slide_base_w": 12.0,        # 狙い寸法（アリの底の幅）
+    "slide_top_w": 8.0,          # 狙い寸法（開口の幅）
+    "slide_depth": 2.0,          # 45 度フランクになる深さ
+    "slide_gaps": (0.2, 0.3, 0.4, 0.5),   # 受け側に足す隙間（試験値）
+    "slide_rail_len": 26.0,
+    "slide_rail_base_h": 6.0,    # レールの掴み代。ソケットの中に立てる
+    "slide_socket_l": 32.0,      # レールを立てるための台座の抜き穴
+    "slide_socket_w": 16.0,
+    "slide_block_l": 30.0,
+    "slide_block_w": 20.0,
+    "slide_block_h": 6.0,
+    "slide_x0": -54.0,
+    "slide_pitch": 36.0,
+    "slide_recv_y": -48.0,       # 受け（アリ溝）の列
+    "slide_rail_y": -68.0,       # レール（折り取り式）の列
+    "slide_label_y": -33.0,
     # 刻印
     "label_size": 6.0,
     "label_depth": 0.6,
@@ -157,6 +191,24 @@ def fin_positions(p):
     ]
 
 
+def slide_positions(p):
+    """(名前, x, 隙間) の一覧."""
+    return [
+        (f"slide_{g:.1f}", p["slide_x0"] + i * p["slide_pitch"], g)
+        for i, g in enumerate(p["slide_gaps"])
+    ]
+
+
+def _dovetail_profile(base_w: float, top_w: float, depth: float, y: float, z: float):
+    """アリ溝／レールの断面（YZ 平面の台形）。底が広い = 抜け止めになる."""
+    return [
+        (y - base_w / 2, z),
+        (y + base_w / 2, z),
+        (y + top_w / 2, z + depth),
+        (y - top_w / 2, z + depth),
+    ]
+
+
 def label_specs(p):
     out = []
     for name, x, _y, d in heatset_positions(p) + clear_positions(p):
@@ -166,6 +218,8 @@ def label_specs(p):
     out.append(("label_ref_pin", f"{p['pin_dia']:.1f}", p["pin_x"], p["pin_label_y"]))
     for name, x, _y, t in fin_positions(p):
         out.append((f"label_{name}", f"{t:.1f}", x, p["fin_label_y"]))
+    for name, x, g in slide_positions(p):
+        out.append((f"label_{name}", f"{g:.1f}", x, p["slide_label_y"]))
     out.append(("label_oring", "OR20", p["oring_cx"], p["oring_cy"]))
     out.append(("label_title", "FIT COUPON v2", p["title_x"], p["title_y"]))
     return out
@@ -238,6 +292,19 @@ def features(p=PARAMS):
             note="薄板フィン（足元の板ごと claim）",
         ))
 
+    for name, x, _g in slide_positions(p):
+        out.append(feature.box(
+            f"{name}_recv", (x, p["slide_recv_y"]),
+            (p["slide_block_l"], p["slide_block_w"]),
+            0.0, t + p["slide_block_h"], margin=m, note="アリ溝の受け（足元の板ごと）",
+        ))
+        out.append(feature.box(
+            f"{name}_rail", (x, p["slide_rail_y"]),
+            (p["slide_socket_l"], p["slide_socket_w"]),
+            0.0, p["slide_rail_base_h"] + p["slide_depth"], margin=m,
+            note="折り取り式のレールとその抜き穴（タブを含む）",
+        ))
+
     out.append(feature.ring(
         "oring_groove", (p["oring_cx"], p["oring_cy"]),
         p["oring_mean_dia"], p["oring_groove_w"],
@@ -308,6 +375,61 @@ def build(p=PARAMS):
             .box(p["fin_len"], f.wall(th), p["fin_h"], centered=(True, True, False))
             .translate((x, y, p["plate_t"]))
         )
+
+    # --- スライド嵌合の試験（角形状） ---
+    for _name, x, gap in slide_positions(p):
+        # 受け: 台の上のブロックにアリ溝を通す。溝は隙間ぶん大きくする。
+        adds = adds.union(
+            cq.Workplane("XY")
+            .box(p["slide_block_l"], p["slide_block_w"], p["slide_block_h"],
+                 centered=(True, True, False))
+            .translate((x, p["slide_recv_y"], p["plate_t"]))
+        )
+        groove = (
+            cq.Workplane("YZ")
+            .polyline(_dovetail_profile(
+                f.wall(p["slide_base_w"]) + gap, f.wall(p["slide_top_w"]) + gap,
+                p["slide_depth"], p["slide_recv_y"],
+                p["plate_t"] + p["slide_block_h"] - p["slide_depth"]))
+            .close()
+            .extrude(p["slide_block_l"] + 2)
+            .translate((x - p["slide_block_l"] / 2 - 1, 0, 0))
+        )
+        cuts = cuts.union(groove)
+
+        # レール: 台座を貫く抜き穴の中にビルドプレートから立てる。
+        # 折り取りタブは第 1 層側にしかないので、摺動面に折り跡が残らないし、
+        # 下向きの張り出しも出ない（v2 の基準ピンと同じ手）。
+        cuts = cuts.union(
+            cq.Workplane("XY")
+            .box(p["slide_socket_l"], p["slide_socket_w"], p["plate_t"] + 2,
+                 centered=(True, True, False))
+            .translate((x, p["slide_rail_y"], -1.0))
+        )
+        base_h = p["slide_rail_base_h"]
+        adds = adds.union(
+            cq.Workplane("XY")
+            .box(p["slide_rail_len"], f.wall(p["slide_base_w"]), base_h,
+                 centered=(True, True, False))
+            .translate((x, p["slide_rail_y"], 0.0))
+        )
+        adds = adds.union(
+            cq.Workplane("YZ")
+            .polyline(_dovetail_profile(
+                f.wall(p["slide_base_w"]), f.wall(p["slide_top_w"]),
+                p["slide_depth"], p["slide_rail_y"], base_h))
+            .close()
+            .extrude(p["slide_rail_len"])
+            .translate((x - p["slide_rail_len"] / 2, 0, 0))
+        )
+        for sx in (-1, 1):
+            adds = adds.union(
+                cq.Workplane("XY")
+                .box(p["slide_socket_l"] - p["slide_rail_len"] + 2.0, p["tab_w"],
+                     p["tab_h"], centered=(True, True, False))
+                .translate((x + sx * (p["slide_rail_len"] / 2 + 1.0),
+                            p["slide_rail_y"], 0.0))
+            )
 
     cuts = cuts.union(
         oring.groove_profile(
