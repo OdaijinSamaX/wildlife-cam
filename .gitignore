@@ -14,3 +14,8 @@ web/node_modules/
 web/dist/
 worker/node_modules/
 worker/.wrangler/
+
+# Secrets (never commit; use the .example files as templates)
+/config/.env
+!/config/.env.child.example
+!/config/.env.parent.example
