@@ -104,7 +104,6 @@ parts/             内蔵部品のダミー形状（BOM プリミティブ）
 designs/           設計スクリプト
 tests/             ネガティブテスト
 out/               生成物（.gitignore 済み）
-docs/NEXT-SESSION.md  **次に作業する人／エージェントが最初に読む文書**
 docs/AGENTS.md     AI が設計を書くときの規約
 docs/HARNESS.md    各チェックの意味・閾値の根拠
 docs/DECISIONS.md  設計判断の記録（不採用にした案も残す）
