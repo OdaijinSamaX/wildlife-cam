@@ -39,6 +39,7 @@ echo "[deploy] Copying files..."
 # この一括 rsync に含まれる。テスト成果物や仮想環境は除外する。
 rsync -avz --exclude="*.pyc" --exclude="__pycache__" --exclude=".env" \
   --exclude="videos/" --exclude="logs/" --exclude=".venv/" \
+  --exclude="hardware/" \
   "${LOCAL_DIR}/" "${SSH_TARGET}:${REMOTE_DIR}/"
 
 echo "[deploy] Installing dependencies on Pi..."

@@ -1,0 +1,13 @@
+# 生成物
+out/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+
+# CAD の出力（out/ の外に手で置いた場合も追跡しない）
+*.stl
+*.3mf
+*.step

@@ -363,6 +363,20 @@ Web / Worker:
 (cd worker && npm ci && npm run typecheck)
 ```
 
+## ハードウェアと筐体
+
+屋外に置く筐体は 3D プリンタで自作しています。設計と検証のコードは [`hardware/enclosure/`](hardware/enclosure/) にあります。
+
+CadQuery で形を書き、多視点レンダと断面図を自動生成し、**13 種類の数値チェック**（壁厚、干渉、クリアランス、オーバーハング、開口、パッキン面圧、視野、レイアウト、多様体性など）を通してから造形します。AI に CAD を書かせるときの最大の弱点は「目が無い」ことなので、**意図的に壊したモデルで各チェックが FAIL することを確かめるネガティブテスト**を必須にしてあります。
+
+実物に当たって設計が変わった例:
+
+- PIR はアクリルや PC の窓を透過しない → フレネルレンズを露出させ、フランジを O リングで壁に押し付ける
+- IR 投光器とレンズを同室にすると内面反射で映像が白く曇る → 隔壁を入れる
+- 完全密閉は結露する → 防水通気膜と乾燥剤が前提
+- 蓋の締結は四隅 4 点では長辺の中央が浮く → 捕捉式の 6 点へ変更
+
+材料は ASA（屋外 UV 耐性）。実際に刷って取得した公差補正値は 壁 ±0 / 穴 +0.30 / 突起 +0.25 です。
 ## Repository map
 
 ```text
@@ -377,6 +391,7 @@ scripts/                   deploy, diagnosis, survey, recovery tools
 worker/                    Cloudflare Worker API
 web/                       React dashboard
 supabase/                  PostgreSQL schema and RLS
+hardware/enclosure/        3D-printed weatherproof enclosure (CadQuery + automated checks)
 docs/                      field operation and design notes
 tests/                     Python regression tests
 ```
@@ -415,4 +430,6 @@ tests/                     Python regression tests
 
 ## License
 
-現時点でlicense fileはありません。公開利用を想定する場合は、用途に合うOSS licenseを追加してください。
+MIT License. 全文は [`LICENSE`](LICENSE) を参照してください。
+
+ソフトウェアと `hardware/` 以下の設計データの両方に適用します。第三者製品に由来する測定・複製データは公開範囲に含めていません。
