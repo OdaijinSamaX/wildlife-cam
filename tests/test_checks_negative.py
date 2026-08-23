@@ -20,6 +20,7 @@ ROOT = Path(__file__).resolve().parent.parent
 COUPON = ROOT / "designs" / "wildlife_cam" / "fit_coupon.py"
 BEZEL = ROOT / "designs" / "wildlife_cam" / "pir_bezel.py"
 UNCLAIMED = ROOT / "tests" / "fixtures" / "unclaimed_hole.py"
+LID = ROOT / "designs" / "wildlife_cam" / "camera_unit_lid.py"
 
 
 def result(path, only, override=None):
@@ -36,6 +37,7 @@ def result(path, only, override=None):
     (COUPON, "wall"), (COUPON, "bbox"), (COUPON, "openings"), (COUPON, "layout"),
     (COUPON, "overhang"),
     (BEZEL, "wall"), (BEZEL, "clearance"), (BEZEL, "openings"), (BEZEL, "layout"),
+    (LID, "seal"),
 ])
 def test_baseline_designs_pass(path, check):
     r = result(path, check)
@@ -219,3 +221,40 @@ def test_pir_carrier_bore_axis_stays_parallel_to_the_build_direction():
     assert (bb.xlen, bb.ylen) == pytest.approx((2.0, 2.0), abs=0.01)
     assert bb.zlen == pytest.approx(10.0, abs=0.01)
     assert tuple(axis) == (0.0, 0.0, 1.0)
+
+
+# --- 8. 締結点を四隅 4 点に戻した変種 -> seal が FAIL ------------------------
+
+
+def test_seal_fails_when_the_lid_is_held_only_at_the_four_corners():
+    """**人間の指摘そのもの。** 長辺 198 mm を四隅 4 点で押さえると中央が浮く.
+
+    支点だけを元の 2 段（z=12 と 186）に戻す。形状は変えていないので、
+    「締結点の間隔が広すぎる」ことだけが FAIL の原因になる。
+    """
+    r = result(LID, "seal", {"support_z": (12.0, 186.0)})
+    assert r.status == FAIL, r.summary
+    assert r.measurements["lid_long_edges: 締結点の最大間隔 [mm]"] == 174.0
+    assert r.measurements["lid_long_edges: 最小圧縮率 [%]"] < 15.0
+    # 浮くのは長辺の中央
+    assert r.table[0]["at_z"] == pytest.approx(99.0, abs=4.0)
+
+
+def test_seal_warns_when_the_gasket_is_harder_than_declared():
+    """硬いゴムほど蓋を押し開く力が強い。材質の申告が効いていることの確認.
+
+    90 Shore A でも 6 点なら下限 15% は割らない（15.5%）。**そこが余裕の正体**で、
+    「余裕が無い」ことは WARN として出る。黙って PASS にはしない。
+    """
+    hard = result(LID, "seal", {"gasket_shore_a": 90.0})
+    soft = result(LID, "seal", {"gasket_shore_a": 50.0})
+    assert hard.status == "WARN", hard.summary
+    assert soft.status == "PASS", soft.summary
+    assert (hard.measurements["lid_long_edges: 最小圧縮率 [%]"]
+            < soft.measurements["lid_long_edges: 最小圧縮率 [%]"])
+
+
+def test_seal_passes_with_the_middle_pair_added():
+    r = result(LID, "seal")
+    assert r.status == "PASS", r.summary
+    assert r.measurements["lid_long_edges: 最小圧縮率 [%]"] >= 20.0

@@ -90,8 +90,96 @@ def test_saddle_seats_the_measured_trunk_range():
 def test_belt_grooves_are_wide_enough_to_wrap_several_times():
     m = lid()
     assert m.PARAMS["belt_w"] >= 30.0
-    assert len(m.PARAMS["belt_frac"]) == 2
+    assert len(m.PARAMS["belt_z"]) == 2
     assert m.PARAMS["belt_extra_depth"] == 3.0
+    # 支点間はできるだけ広い方が揺れに強い。中央の締結点を避けた結果 114.8 mm。
+    z0, z1 = m.PARAMS["belt_z"]
+    assert z1 - z0 >= 99.0
+
+
+def test_belts_do_not_cover_the_thumbscrews_or_the_labels():
+    """ベルトの下に来た蝶ねじは現地で回せない。刻印も読めない.
+
+    蓋は幹に巻いたベルトで押さえられているので、**ベルトを外さずに蓋を開ける**。
+    座ぐりと刻印がベルト帯に掛かっていないことを機械で押さえる。
+    """
+    u, m = unit(), lid()
+    bands = [(zc - m.PARAMS["belt_w"] / 2, zc + m.PARAMS["belt_w"] / 2)
+             for zc in m.PARAMS["belt_z"]]
+    for i, (x, z) in enumerate(u.PARAMS["lid_bosses"]):
+        head = (m.PARAMS["big_head_dia"] if i == u.PARAMS["lid_big_index"]
+                else m.PARAMS["screw_head_dia"])
+        lo, hi = z - head / 2, z + head / 2
+        for b0, b1 in bands:
+            assert hi < b0 or lo > b1, f"締結点 {i+1} (z={z}) がベルト帯 {b0}〜{b1} の下"
+        # 刻印はねじと同じ z（側面に彫る）。同じ判定で足りる。
+    up_z = m.PARAMS["height"] - 4.0
+    for b0, b1 in bands:
+        assert not (b0 - 4 < up_z < b1 + 4), "UP の刻印がベルト帯の下"
+
+
+def test_body_land_carries_the_whole_gasket_groove():
+    """**パッキンの帯が本体の合わせ面から外れていないこと。**
+
+    2026-08-23 に実際にあった不具合の再現テスト。背面リムの押し出し量に
+    切り抜き用の「+1」が入っていて、**land だけが背面より 1 mm 飛び出し、
+    合わせ面の幅が 5 mm から 2 mm に痩せていた。** 蓋の溝 (x 37.65〜40.35) は
+    その段差の縁 (x 39) に跨がり、外側半分は 1 mm の空中に浮いていた。
+    どのチェックにも掛からない（穴でもソリッド同士の干渉でもないので）。
+    """
+    import cadquery as cq
+
+    u, m = unit(), lid()
+    p = m.PARAMS
+    gw = p["gasket_w"]
+    zc = p["height"] / 2
+    half_z = p["height"] / 2 - p["gasket_z_margin"]
+    t = 0.4
+    outer = cq.Solid.makeBox(
+        2 * p["gasket_x"] + gw, t, 2 * half_z + gw,
+        cq.Vector(-(p["gasket_x"] + gw / 2), u.Y_BACK - t, zc - half_z - gw / 2))
+    inner = cq.Solid.makeBox(
+        2 * p["gasket_x"] - gw, t + 1, 2 * half_z - gw,
+        cq.Vector(-(p["gasket_x"] - gw / 2), u.Y_BACK - t - 0.5, zc - half_z + gw / 2))
+    band = outer.cut(inner)
+    body = load_design(BODY).shape
+    assert band.Volume() > 100.0
+    assert band.cut(body).Volume() < 1e-3, "パッキンの帯が合わせ面から外れている"
+    # 合わせ面は背面と面一（land だけが飛び出していない）
+    assert body.BoundingBox().ymax == pytest.approx(u.Y_BACK, abs=1e-3)
+
+
+def test_lid_fastening_keeps_the_gasket_squeezed():
+    """**四隅 4 点では長辺中央でパッキンが浮く**（人間の指摘）ことへの答え.
+
+    seal チェックが梁モデルで出す最小圧縮率が、静的シールの目標 20% 以上あること。
+    根拠と比較した案は docs/lid-fastening.md。
+    """
+    from harness.checks import PASS, run_all
+
+    r = [x for x in run_all(load_design(LID), only=["seal"])][0]
+    assert r.status == PASS, r.summary
+    assert r.measurements["lid_long_edges: 最小圧縮率 [%]"] >= 20.0
+    assert r.measurements["lid_long_edges: 締結点の最大間隔 [mm]"] <= 130.0
+
+
+def test_support_z_is_derived_from_the_posts_not_duplicated():
+    """梁モデルの支点と実際の柱がずれたら、検証は意味を失う."""
+    u, m = unit(), lid()
+    assert tuple(m.PARAMS["support_z"]) == tuple(sorted({z for _x, z in u.PARAMS["lid_bosses"]}))
+    assert len(u.PARAMS["lid_bosses"]) == 6
+
+
+def test_tightening_order_starts_at_the_middle_pair():
+    """刻印の 1..6 は締める順序。**中央から外へ、対角に**が正しい順序.
+
+    フランジと同じで、端から順に締めるとパッキンが片側に寄る。
+    """
+    order = unit().PARAMS["lid_bosses"]
+    mid_z = sorted({z for _x, z in order})[1]
+    assert {order[0][1], order[1][1]} == {mid_z}, "1 と 2 は中央の対であること"
+    assert order[2][0] * order[3][0] < 0 and order[2][1] != order[3][1], "3-4 は対角"
+    assert order[4][0] * order[5][0] < 0 and order[4][1] != order[5][1], "5-6 は対角"
 
 
 def test_lid_has_a_poka_yoke_screw():
