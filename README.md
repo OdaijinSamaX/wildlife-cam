@@ -415,4 +415,6 @@ tests/                     Python regression tests
 
 ## License
 
-現時点でlicense fileはありません。公開利用を想定する場合は、用途に合うOSS licenseを追加してください。
+MIT License. 全文は [`LICENSE`](LICENSE) を参照してください。
+
+ソフトウェアと `hardware/` 以下の設計データの両方に適用します。第三者製品に由来する測定・複製データは公開範囲に含めていません。
