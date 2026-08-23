@@ -1,5 +1,5 @@
 [Unit]
-Description=Wildlife Camera network self-healing watchdog (oneshot)
+Description=wildlife-cam network self-healing watchdog (oneshot)
 # ネットワークを直す側なので network-online.target は待たない。
 # むしろ経路が無い状況こそ動く必要がある。
 After=NetworkManager.service

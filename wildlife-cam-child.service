@@ -1,5 +1,5 @@
 [Unit]
-Description=Wildlife Camera Child Node
+Description=wildlife-cam child node
 After=network.target bluetooth.target
 Wants=network.target bluetooth.target
 

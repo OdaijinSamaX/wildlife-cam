@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Wildlife Camera System -- Deploy to Raspberry Pi
+# wildlife-cam -- Deploy to Raspberry Pi
 # Usage:
 #   ./deploy.sh wildlife-parent
 #   ./deploy.sh 192.168.68.65 [user]

@@ -1,5 +1,5 @@
 [Unit]
-Description=Wildlife Camera System
+Description=wildlife-cam (standalone)
 # network.target は「設定を始めた」時点で満たされるため、LTE が繋がる前に
 # アプリが起動してしまう。実際に経路が立つのを待つ。
 After=network-online.target NetworkManager.service ModemManager.service
