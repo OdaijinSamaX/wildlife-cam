@@ -68,6 +68,15 @@ FPC だけが φ8 のポートを通り、シーラントで封止する。
 蓋の溝が段差の縁に跨がる（2026-08-23 に実際に起きた。`docs/lid-fastening.md` §8.1）。
 `tests/test_camera_unit.py::test_body_land_carries_the_whole_gasket_groove` が見ている。
 
+## 捕捉式ねじ（`CAPTIVE_SCREWS` を宣言しない理由）
+
+`SEAL_SPANS` と同じで、**ポケットも通し穴も蓋の側にある**ので宣言は
+`camera_unit_lid.py` が持っている（`docs/AGENTS.md` §4.9 原則 1）。
+**考え忘れではない。**
+
+ただし本体は **下穴をインサートより深く彫る**責任を負う。同じ深さだと
+M4 x 30 の先端が底を突き、**締めたつもりで面圧が出ない**（`lid_pilot_depth`）。
+
 ## まだ設計していないもの
 
   - Pi と Onyx を載せるトレー（スライドレールの受け側だけ本体に作ってある）。
@@ -123,7 +132,11 @@ PARAMS = {
     # --- 蓋の締結（内部の柱にヒートセット） ---
     "lid_screw_dia": 5.0,        # M4 ヒートセット下穴（暫定）
     "lid_boss_dia": 8.2,
-    "lid_boss_depth": 8.0,
+    "lid_boss_depth": 8.0,       # ヒートセットインサートの有効深さ
+    # **下穴はインサートより深く彫る。** M4 x 30 の蝶ねじはインサートを 8 mm 噛んで
+    # 先端が下穴の底に届く。ぴったりだと**先端が底を突いて締めたつもりで面圧が出ない**
+    # ので、4 mm ぶん逃がしてある。`captive` チェックがこの噛み合いを毎回解く。
+    "lid_pilot_depth": 12.0,     # 設計値（インサート 8.0 + 先端の逃げ 4.0）
     # **6 点（3 対）**。四隅 4 点では長辺中央でパッキンが浮くと `seal` チェックが
     # 出した（圧縮率 13.3% < 下限 15%）。中央に 1 対足して 21% に戻してある。
     # 根拠と比較した案は docs/lid-fastening.md と D-019。
@@ -311,7 +324,7 @@ def _boss(f, x, z, dia, depth, pilot):
     return cq.Workplane("XY").newObject([body.cut(hole)])
 
 
-def _post(f, x, z, dia, depth, pilot, min_wall):
+def _post(f, x, z, dia, pilot_depth, pilot, min_wall):
     """前壁から背面の合わせ面まで通す、蓋を留める柱.
 
     前壁まで通すのは (1) 柱が浮かないため (2) 箱のねじれ剛性に効くため。
@@ -321,8 +334,8 @@ def _post(f, x, z, dia, depth, pilot, min_wall):
     body = cq.Solid.makeCylinder(
         f.boss(dia) / 2, Y_CAVITY_1 - y0, cq.Vector(x, y0, z), cq.Vector(0, 1, 0))
     hole = cq.Solid.makeCylinder(
-        f.hole(pilot) / 2, depth + 1,
-        cq.Vector(x, Y_CAVITY_1 - depth, z), cq.Vector(0, 1, 0))
+        f.hole(pilot) / 2, pilot_depth + 1,
+        cq.Vector(x, Y_CAVITY_1 - pilot_depth, z), cq.Vector(0, 1, 0))
     return cq.Workplane("XY").newObject([body.cut(hole)])
 
 
@@ -422,7 +435,7 @@ def build(p=PARAMS):
         part = part.union(_post(
             f, x, z,
             p["lid_big_boss_dia"] if big else p["lid_boss_dia"],
-            p["lid_boss_depth"],
+            p["lid_pilot_depth"],
             p["lid_big_screw_dia"] if big else p["lid_screw_dia"],
             p["min_wall"]))
 

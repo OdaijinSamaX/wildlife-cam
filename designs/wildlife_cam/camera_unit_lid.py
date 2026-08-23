@@ -12,8 +12,11 @@
      円弧だと 1 つの径にしか合わない。
   3. **ベルト溝** 2 本。幅 30 mm（何重にも巻ける）、鞍の面よりさらに 3 mm 深い。
      鞍と同じ V の延長なので干渉しない。巻いたベルトが上下にずれない。
-  4. **蝶ねじ 6 本の通し穴**。座ぐりで**脱落しない捕捉式**にする前提
-     （E リングか段付きねじ。金具そのものは未設計）。
+  4. **蝶ねじ 6 本の通し穴**と、**シール面側の捕捉ポケット**。
+     蓋を外したとき蝶ねじが蓋に付いたまま残る（**落としたら二度と見つからない**）。
+     軸に付けた平たいリテーナ（E 形止め輪 か 押しナット）がポケットの天井に
+     当たって止まる。寸法の連鎖は `captive` チェックが毎回解く。
+     経緯と不採用案は `docs/captive-fasteners.md` / D-020。
      **四隅 4 本では長辺の中央でパッキンが浮く**ことが `seal` チェックで分かり、
      中央（z=142）に 1 対足した。経緯と比較した案は `docs/lid-fastening.md`。
   5. **ポカヨケ**: ねじ 6 本のうち **1 本だけ M5**（他は M4）。
@@ -50,10 +53,24 @@ PRINT_ORIENTATION = {"rotate": (90, 0, 0)}   シール面を下（ビルドプ�
   6 点（z=12/142/186）で **最小圧縮率 21%**（実効弾性率の係数 0.6 / 70 Shore A）。
   四隅 4 点だと 13.3% で、静的シールの下限 15% を割る。
 
+## 捕捉（`captive` チェックが毎回検証する）
+
+`CAPTIVE_SCREWS` に 6 本を宣言してある。ハーネスが **build() した形状にねじ軸と
+平行なレイを飛ばして**ポケットの深さと頭の座面の深さを実測し、
+
+  「落ちない」= リテーナを受ける肉がある
+  「抜けきる」= 後退できる量 9.7 mm > 噛み合い 8.0 mm + 余裕
+  「平らに座る」= 緩めきったときの出しろ 1.3 mm < 柱までの隙間 3.0 mm
+
+を解く。**ポケットを深くしても面圧はほとんど動かない**（4.5 -> 10.5 mm で
+最小圧縮率 20.98% -> 20.97%）。締結点の真上＝たわみが拘束されている場所だから。
+
+**組立**: 蝶ねじを外側から通し、頭を座ぐりに密着させたまま、リテーナを
+**シール面と面一になるまで**押し込む（蓋を伏せて平らな台に突き当てればよい）。
+
 ## 未設計
 
-  - 蝶ねじの捕捉金具（E リング / 段付きねじ）。`docs/field-procedure.md` の宿題 1
-  - パッキンの座りが見える段差。同 宿題 3
+  - パッキンの座りが見える段差。`docs/field-procedure.md` の宿題 3
   - **合わせ面の平面度（反り）は計算では出せない。** 実機を定盤に当てて測ること。
     198 mm の ASA の反りは、ここで計算した弾性変形（0.08 mm）より大きくなりうる
 """
@@ -96,6 +113,31 @@ PARAMS = {
     "big_screw_dia": 5.5,
     "big_head_dia": 10.5,
     "screw_head_depth": 3.0,
+    #: **蝶ボルトの頭下長さ。** M4 x 30 / M5 x 30（JIS B 1184 蝶ボルト・国内で普通に買える）。
+    #: 蓋を 19 mm 通り、柱まで 3 mm 跳び、インサートに 8 mm 噛む（= 呼び径の 2 倍）。
+    #: 25 mm でも成立するが噛み合いが 3 mm しか取れない（`docs/captive-fasteners.md` §5）。
+    "screw_len": 30.0,           # 設計値（市販の呼び長さ）
+    "big_screw_len": 30.0,       # 設計値
+    #: **捕捉のリテーナ（止め輪 / 押しナット）の外径。**
+    #: E 形止め輪 呼び 4 = 外径 9.0 / 呼び 5 = 外径 11.0（JIS B 2805）を上限に取った。
+    #: 同じ外径に収まる押しナット（プッシュナット）でも成立する。**型番は未確定**
+    #: （docs/NEXT-SESSION.md の人間への確認事項）。
+    "retainer_od": 9.0,          # 推定（未実測。JIS B 2805 E 形 呼び4 の外径）
+    "big_retainer_od": 11.0,     # 推定（未実測。同 呼び5）
+    "retainer_clear": 0.8,       # ポケット径 = 外径 + これ（半径 0.4 の逃げ）
+    #: リテーナの厚み。**そのぶん後退できる量が減る**ので効く。
+    "retainer_t": 0.8,           # 推定（E 形止め輪 呼び4 は 0.6。厚い側を取って安全に）
+    #: **捕捉ポケットの深さ。** ここからリテーナの厚みを引いたものが
+    #: 「ねじが後退できる量」になる。噛み合い 8.0 mm を上回らないと、ねじが相手から
+    #: 抜けきる前にリテーナが止まって**蓋が開かない**。逆に深すぎると緩めたとき
+    #: ねじ先が引っ込みすぎ、蓋を置いたときに柱の穴を探せない。`captive` が毎回解く。
+    #: 深さを 4.5 -> 10.5 に変えても `seal` の最小圧縮率は 20.98% -> 20.97% しか
+    #: 動かない（ポケットは締結点の真上＝たわみが拘束されている場所にあるため）。
+    "retainer_pocket_d": 10.5,   # 設計値（噛み合い 8.0 + リテーナ 0.8 + 余裕 1.7）
+    #: 相手（本体の柱）のインサート座面までの隙間と、インサートの有効深さ。
+    #: **本体から導出する。二重に持たない。**
+    "post_gap": camera_unit.Y_BACK - camera_unit.Y_CAVITY_1,   # 3.0
+    "insert_depth": camera_unit.PARAMS["lid_boss_depth"],      # 8.0
     #: 締結点の z（本体の柱から導出する。**二重に持たない**）。
     #: seal チェックの梁モデルが支点として使う。
     #: ネガティブテストはここを 4 点に戻して「FAIL になること」を確かめる。
@@ -159,6 +201,56 @@ def screw_positions(p=PARAMS):
     return list(camera_unit.PARAMS["lid_bosses"])
 
 
+def _is_big(i, p=PARAMS) -> bool:
+    return i == camera_unit.PARAMS["lid_big_index"]
+
+
+def screw_dims(i, p=PARAMS) -> dict:
+    """ねじ 1 本ぶんの径。**M4 / M5 の分岐をここ 1 箇所にまとめる。**
+
+    build() / features() / CAPTIVE_SCREWS が同じ関数から取るので、
+    「片方だけ M5 を忘れる」が起きない。
+    """
+    big = _is_big(i, p)
+    return {
+        "thread": p["big_screw_dia"] if big else p["screw_dia"],
+        "head": p["big_head_dia"] if big else p["screw_head_dia"],
+        "retainer": p["big_retainer_od"] if big else p["retainer_od"],
+        "length": p["big_screw_len"] if big else p["screw_len"],
+        "pocket": (p["big_retainer_od"] if big else p["retainer_od"])
+        + p["retainer_clear"],
+    }
+
+
+def head_seat_depth(p=PARAMS) -> float:
+    """シール面から**頭が当たる座面**までの深さ = 通し穴を通る長さ."""
+    return p["plate_t"] + p["saddle_t"] - p["screw_head_depth"]
+
+
+def CAPTIVE_SCREWS(p=PARAMS):
+    """`captive` チェックへの申告（`docs/captive-fasteners.md` / D-020）.
+
+    **蓋を外したとき蝶ねじ 6 本が蓋に付いたまま残る**ことを寸法の連鎖で押さえる。
+    ポケットの深さと座面の深さは**申告せず、build() した形状から実測させる**
+    （宣言と実物がずれないように）。
+    """
+    from harness.captive import CaptiveScrew
+
+    out = []
+    for i, (x, z) in enumerate(screw_positions(p)):
+        d = screw_dims(i, p)
+        out.append(CaptiveScrew(
+            name=f"screw_{i + 1}", at=(x, z), axis="Y",
+            thread_dia=d["thread"] - 0.5,      # 通し穴の狙い径 -> 呼び径（M4=4.0）
+            head_dia=d["head"], retainer_od=d["retainer"], retainer_t=p["retainer_t"],
+            screw_len=d["length"], gap_mm=p["post_gap"],
+            insert_depth_mm=p["insert_depth"],
+            note=("リテーナはシール面と面一まで押し込む（平らな台に蓋を伏せて突き当てる）。"
+                  "止め輪なら首に溝が要るが、同外径の押しナットなら加工不要"),
+        ))
+    return out
+
+
 def gasket_path(p=PARAMS):
     """パッキン中心線のレーストラック: (z0, z1, 短辺の長さ, 周長) [mm].
 
@@ -218,12 +310,28 @@ def features(p=PARAMS):
         ),
     ]
     for i, (x, z) in enumerate(screw_positions(p)):
+        d = screw_dims(i, p)
+        # 通し穴・座ぐり・捕捉ポケットは**同軸に積み上がっていて接するのが正しい**
+        # ので、ひとつの claim にまとめる（docs/AGENTS.md §4.5）。
+        # 径は 3 つのうち最大（＝捕捉ポケット）を取る。
         out.append(feature.cylinder(
-            f"screw_{i}", (x, z),
-            p["big_head_dia"] if i == camera_unit.PARAMS["lid_big_index"]
-            else p["screw_head_dia"], -0.5, y_top + 0.5,
-            margin=m, axis="Y", note="蝶ねじの通し穴と座ぐり",
+            f"screw_{i}", (x, z), max(d["head"], d["pocket"]),
+            -0.5, y_top + 0.5,
+            margin=m, axis="Y", note="蝶ねじの通し穴・座ぐり・捕捉ポケット",
         ))
+    # **パッキン溝の長辺**の claim。捕捉ポケットを彫ったことで、ポケットの縁と
+    # 溝の間に残る肉が 1.75 mm しかない。**近づきすぎたら layout に落として欲しい**
+    # ので宣言する（margin 0.8 x 2 = 1.6 = min_wall なので、1.6 を切った瞬間に重なる）。
+    # 短辺（z = 3 / 195）は宣言していない。**レーストラックは円環では包めず、
+    # 長辺と短辺を別々に宣言すると角で必ず重なって誤検出になる**ため。
+    # ねじはすべて長辺の近く（|x| = 30〜31）にあり、短辺までは 9 mm 以上あるので
+    # 危ないのは長辺の側だけである。
+    z0, z1, _end, _per = gasket_path(p)
+    for sign in (-1, 1):
+        out.append(feature.box(
+            f"gasket_long_{'p' if sign > 0 else 'n'}",
+            (sign * p["gasket_x"], p["gasket_d"] / 2), (p["gasket_w"], p["gasket_d"]),
+            z0, z1, margin=m, note="パッキン溝の長辺（溝は y = 0〜1.5 に彫る）"))
     return out
 
 
@@ -258,17 +366,32 @@ def build(p=PARAMS):
         cq.Vector(-(p["gasket_x"] - gw / 2), -1.5, zc - half_z + gw / 2))
     part = part.cut(cq.Workplane("XY").newObject([outer.cut(inner)]))
 
-    # 蝶ねじの通し穴 + 座ぐり（捕捉式にするための段）
-    big_i = camera_unit.PARAMS["lid_big_index"]
+    # 蝶ねじの通し穴 + 頭の座ぐり（外側）+ 捕捉ポケット（シール面側）
+    #
+    #   y=0 シール面                                        y=22 鞍の面
+    #     |<- 捕捉ポケット ->|<---- 通し穴 ---->|<- 座ぐり ->|
+    #     φ9.8 / 深さ 4.5      φ4.5              φ9.0 / 3.0
+    #
+    # **捕捉ポケットは「ねじが後退できる量（逃げ）」を形で決めるためにある。**
+    # リテーナ（止め輪 / 押しナット）をシール面と面一まで押し込むと、緩めたときに
+    # リテーナがポケットの天井に当たって止まる。その行程が噛み合いより長ければ
+    # ねじは相手から抜けきり、短ければ**蓋が開かない**。`captive` が毎回解く。
+    #
+    # ポケットは**シール面（= 第 1 層）に開く**ので、天井は幅
+    # (φ9.8 - φ4.5)/2 = 2.65 mm の環になり、ブリッジで渡せる（サポート不要）。
+    # ポケットはパッキン溝の内側にあるので**漏れ経路にはならない**。
     for i, (x, z) in enumerate(screw_positions(p)):
-        d = p["big_screw_dia"] if i == big_i else p["screw_dia"]
-        hd = p["big_head_dia"] if i == big_i else p["screw_head_dia"]
+        dd = screw_dims(i, p)
         part = part.cut(cq.Workplane("XY").newObject([cq.Solid.makeCylinder(
-            f.hole(d) / 2, y_top + 2,
+            f.hole(dd["thread"]) / 2, y_top + 2,
             cq.Vector(x, -1.0, z), cq.Vector(0, 1, 0))]))
         part = part.cut(cq.Workplane("XY").newObject([cq.Solid.makeCylinder(
-            f.hole(hd) / 2, p["screw_head_depth"] + 1,
+            f.hole(dd["head"]) / 2, p["screw_head_depth"] + 1,
             cq.Vector(x, y_top - p["screw_head_depth"], z), cq.Vector(0, 1, 0))]))
+        if p["retainer_pocket_d"] > 0.01:
+            part = part.cut(cq.Workplane("XY").newObject([cq.Solid.makeCylinder(
+                f.hole(dd["pocket"]) / 2, p["retainer_pocket_d"] + 1.0,
+                cq.Vector(x, -1.0, z), cq.Vector(0, 1, 0))]))
 
     # 刻印（現地 UX 原則 5）。締める順序を現地で読めるようにする。説明書は現地に無い。
     # **側面に、そのねじと同じ z で彫る。** 鞍の面は座ぐりとベルトで埋まっていて

@@ -191,13 +191,40 @@ def test_lid_has_a_poka_yoke_screw():
 
 
 def test_lid_screw_counterbores_clear_the_gasket_groove():
-    """座ぐりがパッキン溝を破ると、そこが漏れ経路になる."""
+    """**座ぐりと捕捉ポケットがパッキン溝を破ると、そこが漏れ経路になる。**
+
+    捕捉ポケット（φ9.8 / φ11.8）は座ぐり（φ9.0 / φ10.5）より**大きい**ので、
+    ここを見落とすと溝に一番近いのはポケットの方になる。
+    """
     u, l = unit(), lid()
     groove_in = l.PARAMS["gasket_x"] - l.PARAMS["gasket_w"] / 2
     for i, (x, _z) in enumerate(u.PARAMS["lid_bosses"]):
-        head = (l.PARAMS["big_head_dia"] if i == u.PARAMS["lid_big_index"]
-                else l.PARAMS["screw_head_dia"])
-        assert abs(x) + head / 2 <= groove_in - 1.6, f"柱 {i} が溝に近すぎる"
+        d = l.screw_dims(i)
+        widest = max(d["head"], d["pocket"])
+        assert abs(x) + widest / 2 <= groove_in - 1.6, \
+            f"締結点 {i + 1} の φ{widest} が溝に近すぎる"
+
+
+def test_thumbscrews_stay_with_the_lid_when_it_comes_off():
+    """**蓋を外したとき蝶ねじ 6 本が蓋に付いたまま残ること**（AGENTS.md §4.9 原則 1）.
+
+    屋久島の林床で落としたねじは落ち葉の中で二度と見つからない。
+    寸法の連鎖は `captive` チェックが解く。ここでは「6 本ぶん宣言されていること」と
+    「本体側の隙間・インサート深さを二重に持っていないこと」を押さえる。
+    """
+    from harness.checks import PASS, run_all
+
+    u, l = unit(), lid()
+    screws = l.CAPTIVE_SCREWS()
+    assert len(screws) == len(u.PARAMS["lid_bosses"]) == 6
+    assert {s.at for s in screws} == set(u.PARAMS["lid_bosses"])
+    # 本体から導出していること（PARAMS に直値を書いていない）
+    assert l.PARAMS["post_gap"] == pytest.approx(u.Y_BACK - u.Y_CAVITY_1)
+    assert l.PARAMS["insert_depth"] == u.PARAMS["lid_boss_depth"]
+    # 下穴はインサートより深いこと（先端が底を突くと面圧が出ない）
+    assert u.PARAMS["lid_pilot_depth"] > u.PARAMS["lid_boss_depth"]
+    r = run_all(load_design(LID), only=["captive"])[0]
+    assert r.status == PASS, (r.summary, r.details)
 
 
 def test_slide_axis_is_declared_and_horizontal_when_printed():
