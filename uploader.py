@@ -74,6 +74,23 @@ class DriveUploader:
         return False
 
 
+def _videos_disk_used_pct() -> int | None:
+    """SD使用率%。arm ポーリングに同乗させて Web の罠カードに出す (statvfsは安価)。"""
+    try:
+        import shutil as _shutil
+
+        from app_paths import get_videos_dir
+
+        usage = _shutil.disk_usage(get_videos_dir())
+        if usage.total <= 0:
+            return None
+        return int(usage.used * 100 / usage.total)
+    except Exception:
+        # この値は「あると便利」なだけ。arm 判定 (=作動可否) と同じ経路に乗るので、
+        # ここで何が起きても arm ポーリングを止めない (OSError 以外も握り潰す)。
+        return None
+
+
 class WorkerUploader:
     def __init__(self, api_url: str, device_token: str, trap_id: str):
         self.api_url = api_url.rstrip("/")
@@ -107,6 +124,9 @@ class WorkerUploader:
             return cached[0]
 
         headers = {"x-device-token": self.device_token}
+        storage_pct = _videos_disk_used_pct()
+        if storage_pct is not None:
+            headers["x-storage-pct"] = str(storage_pct)
         response = self._session.get(
             f"{self.api_url}/traps/{resolved_trap_id}",
             headers=headers,

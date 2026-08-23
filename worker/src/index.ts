@@ -28,6 +28,7 @@ type TrapRow = {
   last_seen_at: string | null;
   updated_at: string;
   created_at: string;
+  storage_pct?: number | null;
 };
 
 const TOKEN_TTL_SECONDS = 15 * 60;
@@ -180,7 +181,7 @@ async function handleTrapState(request: Request, env: Env, trapId: string): Prom
   // 新規の罠を現地投入するときは、Supabase 側で is_armed を true にすること。
   const isArmed = trap?.is_armed ?? false;
   const config = await getTrapConfig(env, trapId);
-  await upsertTrapHeartbeat(env, trapId, isArmed);
+  await upsertTrapHeartbeat(env, trapId, isArmed, parseStoragePct(request.headers.get("x-storage-pct")));
   const now = new Date().toISOString();
 
   return json(
@@ -205,7 +206,7 @@ async function handleTrapList(request: Request, env: Env): Promise<Response> {
 
   const found = await supabaseFetch(
     env,
-    "/rest/v1/traps?select=trap_id,name,is_armed,last_seen_at,updated_at,created_at&order=trap_id.asc",
+    "/rest/v1/traps?select=trap_id,name,is_armed,last_seen_at,updated_at,created_at,storage_pct&order=trap_id.asc",
     { method: "GET" },
   );
 
@@ -614,15 +615,33 @@ async function getTrap(env: Env, trapId: string): Promise<TrapRow | null> {
   return rows[0] ?? null;
 }
 
-async function upsertTrapHeartbeat(env: Env, trapId: string, isArmed: boolean): Promise<void> {
+// デバイス申告のSD使用率 (0-100の整数のみ受理。列が無いDBでも本体のupsertは
+// 別クエリなので壊れない — 列追加SQL: supabase/traps_storage.sql)
+function parseStoragePct(raw: string | null): number | null {
+  if (raw === null) return null;
+  const num = Number(raw);
+  if (!Number.isFinite(num) || Math.round(num) !== num || num < 0 || num > 100) return null;
+  return num;
+}
+
+async function upsertTrapHeartbeat(
+  env: Env,
+  trapId: string,
+  isArmed: boolean,
+  storagePct: number | null = null,
+): Promise<void> {
+  const row: Record<string, unknown> = {
+    trap_id: trapId,
+    is_armed: isArmed,
+    last_seen_at: new Date().toISOString(),
+  };
+  if (storagePct !== null) {
+    row.storage_pct = storagePct;
+  }
   const response = await supabaseFetch(env, "/rest/v1/traps?on_conflict=trap_id", {
     method: "POST",
     headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
-    body: JSON.stringify({
-      trap_id: trapId,
-      is_armed: isArmed,
-      last_seen_at: new Date().toISOString(),
-    }),
+    body: JSON.stringify(row),
   });
 
   if (!response.ok) {

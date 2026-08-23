@@ -23,6 +23,8 @@ export type Trap = {
   record_seconds: number | null;
   cooldown_seconds: number | null;
   motion_sustain_seconds: number | null;
+  // デバイス申告のSD使用率% (arm ポーリング同乗)。80%で回収要請の目安
+  storage_pct?: number | null;
 };
 
 export type AgentMessage = {

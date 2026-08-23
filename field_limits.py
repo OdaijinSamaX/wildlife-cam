@@ -284,7 +284,7 @@ class FieldLimiter:
             self._skip_count = 0
 
     # ================= 見える化 =================
-    def write_status(self, mode: str, is_lte: bool) -> None:
+    def write_status(self, mode: str, is_lte: bool, storage_pct: int | None = None) -> None:
         """field-status.sh が読む key=value スナップショット。"""
         blocked = self.upload_blocked_by_budget(is_lte)
         resume = self.next_budget_resume_epoch() if blocked else 0.0
@@ -300,6 +300,8 @@ class FieldLimiter:
             f"breaker_remaining={int(self.breaker_remaining())}",
             f"updated_at={int(time.time())}",
         ]
+        if storage_pct is not None and storage_pct >= 0:
+            lines.insert(-1, f"storage_pct={storage_pct}")
         try:
             _atomic_write(self.status_file, "\n".join(lines) + "\n")
         except OSError:

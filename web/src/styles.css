@@ -262,6 +262,11 @@ input {
   color: #68756d;
 }
 
+.storage-warn {
+  color: #a03232;
+  font-weight: 700;
+}
+
 .trap-meta-list {
   display: grid;
   gap: 4px;

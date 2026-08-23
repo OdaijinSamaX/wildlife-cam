@@ -10,6 +10,8 @@ from illuminator import Illuminator
 from link import ChildLinkClient, ParentLinkServer, apply_timestamp
 from sensor import MotionSensor
 from field_limits import FieldLimiter, on_lte
+from motion_screen import load_rules, screen_and_route
+from storage_guard import StorageGuard
 from uploader import DriveUploader, WorkerUploader
 from video_storage import (
     clear_retry,
@@ -267,6 +269,17 @@ def run_standalone(log):
     limiter = FieldLimiter(log)
     enforce_limits(log, get_videos_dir())
 
+    # 透明送信ゲート (WILDLIFE_SCREEN_ENABLED=1 で有効化)。ルール読込失敗は
+    # ゲート無効として従来動作 (全量送信) に倒し、起動は止めない。
+    screen_rules = None
+    if os.getenv("WILDLIFE_SCREEN_ENABLED", "0").strip() == "1":
+        try:
+            screen_rules = load_rules(os.getenv("WILDLIFE_SCREEN_RULES", "").strip() or None)
+            log.info("Transparent gate enabled: rules=%s", screen_rules["version"])
+        except (OSError, ValueError, KeyError) as exc:
+            log.error("Screen rules load failed (%s) -- gate disabled, sending all clips", exc)
+    storage = StorageGuard(log, get_videos_dir(), os.getenv("TRAP_ID", "?"))
+
     # 安全思想「通信断=保留(作動しない)」は WorkerUploader 経路でしか成立しない。
     # 設定不備で DriveUploader に落ちると arm ゲートが消え、無条件に撮影し続ける。
     # 静かに安全機構を失うより、起動時に気づける形にする。
@@ -313,6 +326,22 @@ def run_standalone(log):
 
             # Web UI からの録画設定 (arm ポーリングに同乗して届く) を反映する。
             # メモリ値を読むだけで通信はしない。値が変わったときだけログに残す。
+            storage_pct, storage_ok = storage.check()
+            if not storage_ok:
+                # 95%到達: データ保全のため録画を停止して待機 (回収で自動復帰)。
+                # 停止中も滞留分の送信だけは続ける。送信に成功したクリップは削除される
+                # ので、これは「回収に行かずに空きを取り戻せる唯一の自動手段」であり、
+                # 同時に動物が写った動画を現地に取り残さないための経路でもある。
+                # (arm ポーリングは別スレッドなので心拍と storage_pct は流れ続ける)
+                limiter.write_status("storage_full", lte, storage_pct=storage_pct)
+                try:
+                    drain_pending_clips(log, uploader, limiter=limiter, is_lte=lte)
+                except Exception:
+                    log.exception("Pending clip drain failed while storage full")
+                mark_progress()
+                time.sleep(60)
+                continue
+
             trap_config = uploader.trap_config() if isinstance(uploader, WorkerUploader) else {}
             record_seconds = resolve_record_seconds(trap_config)
             sustain_seconds = resolve_motion_sustain_seconds(trap_config)
@@ -362,7 +391,7 @@ def run_standalone(log):
                     mark_progress()
                     return arm_monitor.is_armed()
 
-                limiter.write_status("armed_idle", lte)
+                limiter.write_status("armed_idle", lte, storage_pct=storage_pct)
                 motion_detected = motion_sensor.wait_for_sustained_motion(
                     sustain_seconds,
                     should_continue=_armed_or_pause,
@@ -402,6 +431,17 @@ def run_standalone(log):
             log.info("Recording complete: %s", file_path)
             limiter.note_recording()
             mark_progress()
+
+            if screen_rules is not None:
+                route = screen_and_route(
+                    log, get_videos_dir(), file_path, screen_rules,
+                    progress=mark_progress,
+                )
+                mark_progress()
+                if route == "hold":
+                    # 動物なし: held/ に保管済み。送信しない (judgment.json は記録済み)
+                    time.sleep(0.5)
+                    continue
 
             # LTE 送信予算を超えていたら、この新しい1本も送らず SD に残す。
             # 録画は止めない。予算回復後、drain 側が(バックログ過多なら新しい順で)送る。
