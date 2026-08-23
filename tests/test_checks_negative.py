@@ -258,3 +258,69 @@ def test_seal_passes_with_the_middle_pair_added():
     r = result(LID, "seal")
     assert r.status == "PASS", r.summary
     assert r.measurements["lid_long_edges: 最小圧縮率 [%]"] >= 20.0
+
+
+# --- 12. 捕捉式ねじ -> captive が FAIL -------------------------------------
+#
+# **捕捉は「寸法の連鎖」でしか成立しない。** 連鎖のどこが切れても現地で困るので、
+# 切れ方ごとに 1 本ずつ壊して落ちることを実証する。
+# ここが全部 PASS しか返さなくなったら、captive はもう仕事をしていない。
+
+
+def test_captive_fails_when_the_retainer_pocket_is_missing():
+    """**ポケットを彫り忘れた蓋。** リテーナを受ける肉が無い = ねじは抜けて落ちる.
+
+    現地で落としたねじは落ち葉の中で二度と見つからない（AGENTS.md §4.9 原則 1）。
+    """
+    r = result(LID, "captive", {"retainer_pocket_d": 0.0})
+    assert r.status == FAIL, r.summary
+    assert "捕捉されない" in " ".join(r.details), r.details
+
+
+def test_captive_fails_when_the_pocket_is_too_shallow_to_release():
+    """**ポケットが浅すぎる蓋。** ねじが相手から抜けきる前にリテーナが止まる.
+
+    これは「ねじが落ちる」の逆で、**現地で蓋が開かない**。
+    浅い方が安全そうに見えるので、間違えやすい向きである。
+    """
+    r = result(LID, "captive", {"retainer_pocket_d": 3.0})
+    assert r.status == FAIL, r.summary
+    assert "蓋が開かない" in " ".join(r.details), r.details
+
+
+def test_captive_fails_when_the_screw_bottoms_out_in_the_pilot_hole():
+    """**長すぎる蝶ねじ。** 先端が下穴の底を突くと、締めたつもりで面圧が出ない.
+
+    ねじを買い替えるだけで起きる。外から見て分からないのが厄介なところ。
+    """
+    r = result(LID, "captive", {"screw_len": 40.0, "big_screw_len": 40.0})
+    assert r.status == FAIL, r.summary
+    assert "下穴の底" in " ".join(r.details), r.details
+
+
+def test_captive_fails_when_the_screw_is_too_short_to_reach():
+    """**短すぎる蝶ねじ。** 蓋を通り抜けた先で相手に届かない."""
+    r = result(LID, "captive", {"screw_len": 20.0, "big_screw_len": 20.0})
+    assert r.status == FAIL, r.summary
+    assert "届かない" in " ".join(r.details), r.details
+
+
+def test_captive_passes_on_the_designed_lid():
+    """基準線。設計どおりの蓋は「落ちない・抜けきる・平らに座る」を満たす."""
+    from harness.checks import PASS
+
+    r = result(LID, "captive")
+    assert r.status == PASS, (r.summary, r.details)
+    assert r.measurements["screw_1: 噛み合い engage [mm]"] == pytest.approx(8.0, abs=0.05)
+    assert r.measurements["screw_1: 緩めきったときの出しろ [mm]"] < 3.0
+
+
+def test_captive_measures_the_pocket_from_the_built_shape_not_the_params():
+    """**宣言ではなく build() した形から測っていること。**
+
+    PARAMS を触ればチェックの実測値が動く。動かなければ、それは形を見ていない証拠。
+    """
+    a = result(LID, "captive", {"retainer_pocket_d": 10.5})
+    b = result(LID, "captive", {"retainer_pocket_d": 12.0})
+    ka = "screw_1: 後退できる量 travel [mm]"
+    assert b.measurements[ka] - a.measurements[ka] == pytest.approx(1.5, abs=0.05)
