@@ -65,6 +65,11 @@ def write_report(
     L.append(f"- 造形姿勢 (rotate): {_fmt(ctx.print_orientation.get('rotate', (0, 0, 0)))}")
     if render is not None:
         L.append(f"- レンダ方式: `{render.backend}`")
+    table = getattr(ctx, "fit", None)
+    if table is not None:
+        L.append(f"- 寸法補正テーブル: `{table.id}`（{table.provenance}）")
+    else:
+        L.append("- 寸法補正テーブル: **未宣言**")
     L.append("")
 
     L.append("## 判定サマリ")
@@ -90,21 +95,47 @@ def write_report(
         for k, p in artifacts.items():
             L.append(f"- {k.upper()}: `{Path(p).name}`")
         L.append("")
+        L.append(
+            "> STEP は**狙い形状**（印刷後にこうなってほしい形）。"
+            "STL と 3MF は造形姿勢を適用した**補正済み形状**で、"
+            "寸法補正テーブルぶんだけ狙い形状と違う。"
+            "チェックとレンダはすべて狙い形状を見ている。"
+        )
+        L.append("")
 
     if render and render.files:
         L.append("## 外観")
         L.append("")
-        views = [f for f in render.files if not f.name.startswith("section_")]
-        secs = [f for f in render.files if f.name.startswith("section_")]
+        assy = list(getattr(render, "assembly_files", []) or [])
+        secs = list(getattr(render, "section_files", []) or [])
+        skip = {f.name for f in assy} | {f.name for f in secs}
+        views = [f for f in render.files if f.name not in skip]
         for f in views:
             L.append(f"### {f.stem}")
             L.append("")
             L.append(f"![{f.stem}](views/{f.name})")
             L.append("")
+        if assy:
+            L.append("## 内部の収まり（内蔵部品つき）")
+            L.append("")
+            L.append(
+                "外殻を半透明にして内蔵部品を色分けで重ねた図。色と名前の対応は"
+                "図の左上の凡例と、各部品の中心に置いたラベルで分かる。"
+            )
+            L.append("")
+            for f in assy:
+                L.append(f"### {f.stem}")
+                L.append("")
+                L.append(f"![{f.stem}](views/{f.name})")
+                L.append("")
+
         if secs:
             L.append("## 断面")
             L.append("")
-            L.append("防水筐体は溝と肉厚が中に隠れる。外観だけで判断しないこと。")
+            L.append(
+                "防水筐体は溝と肉厚が中に隠れる。外観だけで判断しないこと。"
+                "**外殻も内蔵部品も同じ面で切ってある**ので、部品の断面も見える。"
+            )
             L.append("")
             for f in secs:
                 L.append(f"### {f.stem}")

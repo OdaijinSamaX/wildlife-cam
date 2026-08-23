@@ -1,4 +1,17 @@
-"""公差校正クーポン — 1 回の印刷で嵌合公差テーブルを確定させるための部品.
+"""公差校正クーポン v1 — **印刷した実物の記録**（凍結）.
+
+> **このファイルは変更しないこと。**
+> 2026-08-22 に P1S / ASA / 0.4 mm ノズル / 平置きで実際に印刷し、
+> その実物を測って `harness/fit.py` の補正テーブル `asa-p1s-0.4mm-2026-08-22` を
+> 起こした。ここを書き換えると「何を刷って測ったのか」が失われる。
+>
+> **寸法補正は入っていない**（`FIT_TABLE = fit.NONE`）。補正値を決めるための
+> クーポンなので当然で、これは「測り忘れ」ではなく意図した宣言である。
+>
+> 実測結果と、そこから補正値を導いた計算は `fit_coupon.md`。
+> 補正を通した後継は `fit_coupon_v2.py`。基準ピンが台座と一体で生えていて
+> 同じ板の穴に挿せなかった設計ミスも v2 で直してある。
+
 
 想定する取り付け方: 取り付けない。印刷して測るだけの校正用治具。
 P1S / ASA / 0.4 mm ノズル / 0.2 mm 層で刷る前提。
@@ -36,10 +49,13 @@ import math
 
 import cadquery as cq
 
-from harness import feature
+from harness import feature, fit
 from parts import oring
 
 DESIGN_NAME = "fit_coupon"
+
+#: 補正値を決めるためのクーポンなので、補正は入れない（意図した宣言）。
+FIT_TABLE = fit.NONE
 
 PARAMS = {
     # 台座
@@ -268,4 +284,6 @@ def build(p=PARAMS):
     for _name, text, x, y in label_specs(p):
         cuts = cuts.union(_label_shape(text, x, y, p))
 
-    return plate.union(adds).cut(cuts)
+    # 先に穴と刻印を抜いてから、立ち上がるものを足す。
+    # 逆順だとソケット穴の切り抜きが折り取りタブごと削ってしまう。
+    return plate.cut(cuts).union(adds)

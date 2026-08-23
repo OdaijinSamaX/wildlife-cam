@@ -45,9 +45,9 @@ def test_baseline_designs_pass(path, check):
 # --- 1. 肉厚 0.8 mm の変種 -> wall が FAIL ---------------------------------
 
 
-def test_wall_fails_on_thin_flange():
-    """フランジ厚を 2.3 mm に落とすと、フェイス O リング溝の天井が 0.8 mm になる."""
-    r = result(BEZEL, "wall", {"flange_t": 2.3})
+def test_wall_fails_on_thin_seal_land():
+    """フェイス O リング溝を 2.5 mm 深く掘ると、溝底と PCB ポケットの間が 0.8 mm になる."""
+    r = result(BEZEL, "wall", {"face_groove_d": 2.5})
     assert r.status == FAIL, r.summary
     assert r.measurements["robust_min_wall_mm"] == pytest.approx(0.8, abs=0.05)
     assert r.measurements["threshold_mm"] == 1.6
@@ -62,7 +62,7 @@ def test_wall_passes_on_baseline_bezel():
 
 
 def test_clearance_fails_when_component_bites_into_wall():
-    """内径をドームより細くすると、HC-SR501 のドームがベゼルに食い込む."""
+    """内径をドームより細くすると、HC-SR501 のドームがキャリアに食い込む."""
     r = result(BEZEL, "clearance", {"bore_dia": 22.0})
     assert r.status == FAIL, r.summary
     assert r.measurements["violations"] >= 1
@@ -193,3 +193,29 @@ def test_layout_warns_when_nothing_is_declared():
     ctx.features = []
     r = run_all(ctx, only=["layout"])[0]
     assert r.status == "WARN", r.summary
+
+
+# --- 7. 造形姿勢の宣言が守られていること ------------------------------------
+
+
+def test_pir_carrier_bore_axis_stays_parallel_to_the_build_direction():
+    """内径の軸が造形方向に平行であること（docs/DECISIONS.md D-001 の宣言）.
+
+    寝かせると内径の積層線が軸方向に走り、シール面／接着面を縦断する
+    連続した漏れ経路になる。姿勢を勝手に変えたらここで止まる。
+    """
+    import numpy as np
+
+    from harness import geom
+
+    ctx = load_design(BEZEL)
+    axis = np.array(ctx.module.BORE_AXIS, dtype=float)
+    rot = ctx.print_orientation.get("rotate", (0, 0, 0))
+    probe = geom.rotate_shape(
+        __import__("cadquery").Solid.makeCylinder(1.0, 10.0), rot
+    )
+    bb = probe.BoundingBox()
+    # 軸に沿った寸法だけが 10 mm になる = 軸が Z のままである
+    assert (bb.xlen, bb.ylen) == pytest.approx((2.0, 2.0), abs=0.01)
+    assert bb.zlen == pytest.approx(10.0, abs=0.01)
+    assert tuple(axis) == (0.0, 0.0, 1.0)

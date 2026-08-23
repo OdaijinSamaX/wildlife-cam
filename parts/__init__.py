@@ -15,23 +15,25 @@ DIM_SOURCE を "measured:YYYY-MM-DD" に変え、値を差し替える。
 from . import (  # noqa: F401
     cable_gland,
     cam_module3,
-    eg25g,
     gore_vent,
     hcsr501,
     ir_illuminator,
     m3_heatset,
     oring,
+    otg_cable,
     pi_zero_2w,
+    soracom_onyx,
 )
 
 ALL = [
     pi_zero_2w,
     cam_module3,
     hcsr501,
-    eg25g,
+    soracom_onyx,
     ir_illuminator,
     m3_heatset,
     oring,
+    otg_cable,
     cable_gland,
     gore_vent,
 ]

@@ -96,19 +96,27 @@ harness/           ハーネス本体
   report.py        Markdown レポート
   component.py     内蔵部品を表す型
   feature.py       フィーチャの占有領域 (claim) を表す型と、その作り方
+  fit.py           寸法補正テーブル（実測から起こした造形の癖の吸収）
   checks/          7 つのチェック（下記）
 parts/             内蔵部品のダミー形状（BOM プリミティブ）
 designs/           設計スクリプト
 tests/             ネガティブテスト
 out/               生成物（.gitignore 済み）
+docs/NEXT-SESSION.md  **次に作業する人／エージェントが最初に読む文書**
 docs/AGENTS.md     AI が設計を書くときの規約
-docs/HARNESS.md    各チェックの意味・閾値の根拠・限界
+docs/HARNESS.md    各チェックの意味・閾値の根拠
+docs/DECISIONS.md  設計判断の記録（不採用にした案も残す）
+docs/layout-study.md  wildlife-cam 内部レイアウトの比較検討（4 案 + 推奨）
+docs/window-options.md  カメラ窓の方式と材料の比較
+docs/field-procedure.md 現地作業手順の下書き
+docs/enclosure-body.md  カメラユニット本体の設計判断（貫通・締結・分割の是非）・限界
 ```
 
 ## チェック
 
 | # | 名前 | 見るもの |
 |---|---|---|
+| 0 | fit | 寸法補正テーブルの素性と、どの寸法にいくら足したかの記録 |
 | 1 | manifold | 水密・多様体か（B-rep とメッシュの両方） |
 | 2 | wall | 最小肉厚（レイキャスト法）。薄い箇所は座標も出す |
 | 3 | bbox | 造形姿勢を適用したあと P1S の枠に収まるか |
@@ -117,6 +125,7 @@ docs/HARNESS.md    各チェックの意味・閾値の根拠・限界
 | 6 | clearance | 内蔵部品の外形 + クリアランスが筐体と干渉しないか |
 | 7 | overhang | 造形姿勢を適用したあとの下向き面の面積と渡り幅 |
 | 8 | openings | 内外を貫通する開口の一覧と面積（防水の要） |
+| 9 | fov | カメラの視野を筐体が遮っていないか |
 
 **すべてのチェックは PASS/FAIL だけでなく実測値を返す。**
 閾値の根拠と「何を見逃すか」は `docs/HARNESS.md` にある。
@@ -146,8 +155,21 @@ uv run pytest -q
 
 | 設計 | 何のためか |
 |---|---|
-| `designs/wildlife_cam/fit_coupon.py` | 嵌合公差テーブルを 1 回の印刷で確定させる校正クーポン（120 x 90 x 20 mm）。手順は [fit_coupon.md](designs/wildlife_cam/fit_coupon.md) |
-| `designs/wildlife_cam/pir_bezel.py` | HC-SR501 を筐体壁に防水で貫通させるベゼル |
+| `designs/wildlife_cam/fit_coupon.py` | 公差校正クーポン v1。**2026-08-22 に印刷して実測済み**の実物の記録（凍結） |
+| `designs/wildlife_cam/fit_coupon_v2.py` | 同 v2。補正テーブルを通し、基準ピンを折り取り式の独立部品にした。実測値と導出は [fit_coupon.md](designs/wildlife_cam/fit_coupon.md) |
+| `designs/wildlife_cam/pir_bezel.py` | HC-SR501 を筐体壁に防水で貫通させる接着封止キャリア |
+| `designs/wildlife_cam/layout_study_{a,b,c,d}.py` | 内部レイアウトの比較検討 4 案。結論は [layout-study.md](docs/layout-study.md) |
+| `designs/wildlife_cam/camera_unit.py` | **カメラユニット本体（実設計）**。案D を起こしたもの |
+| `designs/wildlife_cam/camera_unit_lid.py` | 同 背面の蓋。鞍（V 溝）とベルト溝つき |
+| `designs/wildlife_cam/window_snoot.py` | カメラ窓（主案）。既製ドーム蓋 + カメラ送り出し筒 |
+| `designs/wildlife_cam/window_hood.py` | カメラ窓（代替案）。平板 + 庇 |
 
-どちらも **まだ印刷していない**。`parts/hcsr501.py` の寸法が全て推定なので、
-pir_bezel は実測が入るまで印刷しないこと。
+どちらも **まだ印刷していない**。
+
+`pir_bezel.py` は名前こそベゼルだが、中身は**接着封止キャリア**である。
+HC-SR501 の実測（2026-08-22）でドームにツバが無いことが判明し、
+「フランジを O リングで壁に押し付ける」旧構成が不成立になったため作り直した。
+検討して不採用にした案を含む経緯は [docs/DECISIONS.md](docs/DECISIONS.md) にある。
+
+筐体本体の設計に入る前に、`docs/AGENTS.md` の「内蔵部品の寸法順位」を見ること。
+最長の部品は SORACOM Onyx（USB ドングル・95 mm）で、筐体の内寸はこれで決まる。
