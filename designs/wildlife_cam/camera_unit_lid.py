@@ -12,12 +12,18 @@
      円弧だと 1 つの径にしか合わない。
   3. **ベルト溝** 2 本。幅 30 mm（何重にも巻ける）、鞍の面よりさらに 3 mm 深い。
      鞍と同じ V の延長なので干渉しない。巻いたベルトが上下にずれない。
-  4. **蝶ねじ 4 本の通し穴**。座ぐりで**脱落しない捕捉式**にする前提
+  4. **蝶ねじ 6 本の通し穴**。座ぐりで**脱落しない捕捉式**にする前提
      （E リングか段付きねじ。金具そのものは未設計）。
-  5. **ポカヨケ**: ねじ 4 本のうち **1 本だけ M5**（他は M4）。
+     **四隅 4 本では長辺の中央でパッキンが浮く**ことが `seal` チェックで分かり、
+     中央（z=142）に 1 対足した。経緯と比較した案は `docs/lid-fastening.md`。
+  5. **ポカヨケ**: ねじ 6 本のうち **1 本だけ M5**（他は M4）。
      180 度回すと M5 のねじが M4 のインサートに入らないので、
      **逆向きでは締まらない。** 穴径の違いは目でも分かる。
-  6. **刻印**: 締める順序 1-2-3-4 と UP。現地に説明書は無い。
+     さらに**中央の対が z=142 だけ**（上下非対称）なので、逆向きでは穴自体が合わない。
+  6. **刻印**: 締める順序 1〜6 と UP。現地に説明書は無い。
+     **側面 (x = ±42) に、そのねじと同じ z で彫る。** 鞍の面には置き場所が無く
+     （座ぐりとの間に 1.6 mm の肉が残らない / ベルトの下に隠れる）、
+     側面なら箱の横から読める。背面は幹に向いているので読めない。
 
 ## 座標
 
@@ -34,18 +40,29 @@ PRINT_ORIENTATION = {"rotate": (90, 0, 0)}   シール面を下（ビルドプ�
   - V 溝とベルト溝は**上向きに開く**のでサポートが要らない
   - パッキン溝は下向きに開くが、幅 2.70 のブリッジなので渡せる
 
+## パッキンの面圧（`seal` チェックが毎回検証する）
+
+`SEAL_SPANS` に合わせ面を宣言してある。ハーネスが **build() した形状から
+断面二次モーメントを実測**し、パッキンを非線形の弾性床とした梁として解いて、
+締結点の間で潰し量がいくつまで落ちるかを出す。式と仮定は `harness/seal.py`、
+検討の全体は `docs/lid-fastening.md`。
+
+  6 点（z=12/142/186）で **最小圧縮率 21%**（実効弾性率の係数 0.6 / 70 Shore A）。
+  四隅 4 点だと 13.3% で、静的シールの下限 15% を割る。
+
 ## 未設計
 
   - 蝶ねじの捕捉金具（E リング / 段付きねじ）。`docs/field-procedure.md` の宿題 1
   - パッキンの座りが見える段差。同 宿題 3
-  - 4 点でパッキンの面圧が均等になるかは未検証（蓋のたわみ計算をしていない）
+  - **合わせ面の平面度（反り）は計算では出せない。** 実機を定盤に当てて測ること。
+    198 mm の ASA の反りは、ここで計算した弾性変形（0.08 mm）より大きくなりうる
 """
 
 import math
 
 import cadquery as cq
 
-from harness import feature, fit
+from harness import feature, fit, seal
 from designs.wildlife_cam import camera_unit
 from parts import oring
 
@@ -61,7 +78,11 @@ PARAMS = {
     "saddle_half_angle_deg": 54.0,
     "belt_extra_depth": 3.0,     # 鞍面よりさらに深く彫る量
     "belt_w": 30.0,              # 何重にも巻ける幅
-    "belt_frac": (0.25, 0.75),
+    # ベルトの中心 z。**蝶ねじの座ぐりに掛からない位置に置く**（掛かるとベルトを
+    # 外さないと蓋を開けられない）。座ぐりが塞ぐのは z 6.8〜17.3 / 136.8〜147.3 /
+    # 180.8〜191.3 なので、上のベルトは 147.3〜180.8 の窓（33.5 mm）に入れる。
+    # 下 49.5 / 上 164.3 で支点間 114.8 mm（旧 99 mm より広く、揺れに強い）。
+    "belt_z": (49.5, 164.3),
     # パッキン溝（本体の land 中央に合わせる）
     "gasket_w": oring.GROOVE_WIDTH,   # 2.70
     "gasket_d": oring.GROOVE_DEPTH,   # 1.50
@@ -71,14 +92,27 @@ PARAMS = {
     # 蝶ねじ
     "screw_dia": 4.5,
     "screw_head_dia": 9.0,
-    # 4 本目だけ M5（ポカヨケ）。本体の lid_big_index に対応する。
+    # 1 本だけ M5（ポカヨケ）。本体の lid_big_index に対応する。
     "big_screw_dia": 5.5,
     "big_head_dia": 10.5,
     "screw_head_depth": 3.0,
+    #: 締結点の z（本体の柱から導出する。**二重に持たない**）。
+    #: seal チェックの梁モデルが支点として使う。
+    #: ネガティブテストはここを 4 点に戻して「FAIL になること」を確かめる。
+    "support_z": tuple(sorted({z for _x, z in camera_unit.PARAMS["lid_bosses"]})),
+    #: パッキンの硬度と材質。**硬いほど蓋を押し開く力が強い**ので、seal チェックは
+    #: この値で判定する。屋外なので UV とオゾンに強い EPDM かシリコーンを使う
+    #: （NBR は紫外線で割れる）。70 Shore A は入手しやすい側の上限＝安全側。
+    "gasket_shore_a": 70.0,
+    "gasket_material": "EPDM / シリコーン",
     "min_wall": 1.6,
     "feature_margin": 0.8,
     "label_size": 6.0,   # size 5 では文字の線幅が min_wall を切る（fit_coupon の実測）
     "label_depth": 0.6,
+    #: 刻印は**側面（x = ±42）**に彫る。鞍の面には (1) 座ぐりとの間に 1.6 mm の肉が
+    #: 残らない (2) ベルトの下に隠れる、のどちらかになって置き場所が無い。
+    #: 側面なら現地で**横から**読めるうえ、ベルト帯 (z 149.3〜179.3) さえ避ければよい。
+    "label_face_y": 11.0,   # 側面の高さ 22 の中央
 }
 
 #: シール面を下にして刷る。第 1 層 = 最も平坦な面がパッキンに当たる。
@@ -94,7 +128,8 @@ CHECK_CONFIG = {
     "voxel_pitch_mm": 1.5,
     "openings_match_tol_mm": 0.1,
     "expected_openings": [
-        {"diameter_mm": PARAMS["screw_dia"], "count": 3,
+        {"diameter_mm": PARAMS["screw_dia"],
+         "count": len(camera_unit.PARAMS["lid_bosses"]) - 1,
          "note": "蝶ねじ M4 の通し穴（パッキンの内側なので漏れ経路にならない）"},
         {"diameter_mm": PARAMS["big_screw_dia"], "count": 1,
          "note": "蝶ねじ M5（ポカヨケ。1 本だけ大きい）"},
@@ -122,6 +157,39 @@ def trunk_center_height(trunk_dia: float, p=PARAMS) -> float:
 
 def screw_positions(p=PARAMS):
     return list(camera_unit.PARAMS["lid_bosses"])
+
+
+def gasket_path(p=PARAMS):
+    """パッキン中心線のレーストラック: (z0, z1, 短辺の長さ, 周長) [mm].
+
+    build() の溝と**同じ式**から出す（二重に数字を持たない）。
+    """
+    zc = p["height"] / 2
+    half_z = p["height"] / 2 - p["gasket_z_margin"]
+    z0, z1 = zc - half_z, zc + half_z
+    end_run = 2 * p["gasket_x"]
+    return z0, z1, end_run, 2 * (z1 - z0) + 2 * end_run
+
+
+def SEAL_SPANS(p=PARAMS):
+    """`seal` チェックへの申告。長辺 2 本を 1 本の梁として解く.
+
+    蓋は z 方向に長い梁で、パッキンの長辺 2 本（x = ±39）が下から押し上げる。
+    短辺（z = 3 と 195）は梁の両端の集中荷重になる。締結点では蓋が本体の land に
+    密着して止まる（ハードストップ）ので、そこの潰し量は 0.50 mm で頭打ち。
+    """
+    z0, z1, end_run, _perim = gasket_path(p)
+    return [seal.SealSpan(
+        name="lid_long_edges",
+        z0=z0, z1=z1,
+        supports=tuple(float(z) for z in p["support_z"]),
+        gasket=seal.Gasket(
+            cord_mm=oring.CORD, groove_depth_mm=p["gasket_d"],
+            shore_a=p["gasket_shore_a"], lines=2, material=p["gasket_material"]),
+        end_run_mm=end_run,
+        note=("長辺 2 本 x 192 mm + 短辺 2 本 x 78 mm = 周長 540 mm。"
+              "本体側のリムは剛体とみなす（面内で受ける深い壁なので蓋より硬い）"),
+    )]
 
 
 def _v_cutter(depth: float, z0: float, z1: float, p=PARAMS):
@@ -172,8 +240,7 @@ def build(p=PARAMS):
     part = part.cut(_v_cutter(p["saddle_depth"], -1.0, p["height"] + 1.0, p))
 
     # ベルト溝（さらに 3 mm 深い V を 2 本）
-    for frac in p["belt_frac"]:
-        zc = p["height"] * frac
+    for zc in p["belt_z"]:
         part = part.cut(_v_cutter(
             p["saddle_depth"] + p["belt_extra_depth"],
             zc - p["belt_w"] / 2, zc + p["belt_w"] / 2, p))
@@ -203,24 +270,35 @@ def build(p=PARAMS):
             f.hole(hd) / 2, p["screw_head_depth"] + 1,
             cq.Vector(x, y_top - p["screw_head_depth"], z), cq.Vector(0, 1, 0))]))
 
-    # 刻印（現地 UX 原則 5）。**V 溝とベルト溝を避けた平らな帯**（|x| = 26.2〜42）に彫る。
-    # 締める順序を現地で読めるようにする。説明書は現地に無い。
+    # 刻印（現地 UX 原則 5）。締める順序を現地で読めるようにする。説明書は現地に無い。
+    # **側面に、そのねじと同じ z で彫る。** 鞍の面は座ぐりとベルトで埋まっていて
+    # 1.6 mm の肉を残せない。側面なら箱の横から読める（背面は幹に向いている）。
+    half_w = f.boss(p["width"]) / 2      # 補正後の側面の位置（彫り込み深さを一定に保つ）
     for i, (x, z) in enumerate(screw_positions(p)):
-        dz = 11.0 if z < p["height"] / 2 else -11.0
-        part = part.cut(_label(str(i + 1), x, z + dz, p))
-    part = part.cut(_label("UP", 33.0, p["height"] - 34.0, p))
+        part = part.cut(_label(str(i + 1), 1 if x > 0 else -1, z, p, half_w))
+    # UP は左右両面の上端近くに。どちら側から近づいても読める。
+    for sign in (-1, 1):
+        part = part.cut(_label("UP", sign, p["height"] - 4.0, p, half_w))
     return part
 
 
-def _label(text, x, z, p):
-    """外面 (+Y) に彫る刻印。+Y から読むので左右を反転させる.
+def _label(text, sign, z, p, half_w=None):
+    """側面 (x = sign * half_w) に彫る刻印。彫り込みは label_depth、外へ 1 mm 逃がす.
 
+    面は YZ 平面（文字の並びが +Y、上が +Z）。
+    **+X 側の面は外から見ると +Y が左に来る**ので左右を反転させる。
+    （視線 -X / 上 +Z で見ると、見る人の右は Z x (-X) = -Y になる。）
     反転を忘れると現地で鏡文字になる。刻んでしまったら直せない。
     """
-    y_top = p["plate_t"] + p["saddle_t"]
-    return (
-        cq.Workplane("XZ")
-        .text(text, p["label_size"], p["label_depth"] + 1.0, combine=False)
-        .mirror("YZ")
-        .translate((x, y_top, z))
+    depth = p["label_depth"] + 1.0
+    solid = (
+        cq.Workplane("YZ")
+        .text(text, p["label_size"], depth, combine=False)   # x = 0..depth に立つ
     )
+    x_face = sign * (p["width"] / 2 if half_w is None else half_w)
+    if sign > 0:
+        solid = solid.mirror("XZ")                 # y -> -y（+X 面から読めるように）
+        x0 = x_face - p["label_depth"]             # 面から内側へ label_depth だけ食い込む
+    else:
+        x0 = x_face - 1.0                          # -X 面: 外へ 1 mm 出して内側へ食い込む
+    return solid.translate((x0, p["label_face_y"], z))
