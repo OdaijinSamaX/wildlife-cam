@@ -1,6 +1,6 @@
-# Wildlife Camera System β
+# wildlife-cam β
 
-Wildlife Camera is an open-source, field-resilient camera system for Raspberry Pi.
+**wildlife-cam** is an open-source, field-resilient camera system for Raspberry Pi.
 It detects motion, records short clips, and uploads them through Wi-Fi or LTE to a private cloud archive.
 The current β deployment runs standalone on a Pi Zero 2 W and is designed to fail safe during network loss, power loss, and unstable mobile coverage.
 The repository also contains a React dashboard, a Cloudflare Worker API, and an earlier parent-child operating mode.
