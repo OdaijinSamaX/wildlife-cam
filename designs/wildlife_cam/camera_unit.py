@@ -79,9 +79,8 @@ M4 x 30 の先端が底を突き、**締めたつもりで面圧が出ない**�
 
 ## まだ設計していないもの
 
-  - Pi と Onyx を載せるトレー（スライドレールの受け側だけ本体に作ってある）。
-    **レールの区間 z 128〜194 には蓋の柱が 2 対（z=142 と 186）通っている。**
-    トレーはそこを避けた形にするか、レールを短くすること
+  - **Onyx の保持**（Pi のトレーは `pcb_tray.py` に起こした）。
+    Onyx は z 21〜136 に寝ているが、いまは何にも留まっていない
   - リブの本数と位置は**たわみ計算をしていない**。2 本の縦リブは目安
     （**蓋のたわみは `seal` チェックで数値化した。前壁のリブはまだ**）
 """
@@ -156,15 +155,43 @@ PARAMS = {
     "lid_big_screw_dia": 6.2,
     "lid_big_boss_dia": 9.4,
 
-    # --- 内部: スライドレール（トレーの受け） ---
-    "rail_base_w": 12.0,         # fit_coupon v2 と同じ公称
-    "rail_top_w": 8.0,
-    "rail_depth": 2.0,
-    "rail_gap": 0.3,             # 暫定。fit_coupon v2 の実測で確定させる
-    "rail_z0": 128.0,
-    "rail_z1": 194.0,
-    "rail_y": 34.0,
-    "detent_dia": 2.0,           # 抜け止めのクリック（最小限）
+    # --- 内部: 基板トレーの受け（C チャンネル） ---
+    #
+    # **ここは 2026-08-23 に作り直した。** それまでは z 方向のアリ溝レール
+    # （z 128〜194）だったが、**蓋の柱 6 点（D-019）と両立しない**ことが分かった。
+    # 柱が x 26.9〜35.1 を塞ぐので内側に残る幅は 53.8 mm しかなく、**幅 65 mm の
+    # Pi を載せたトレーは柱の z を通り抜けられない。** 経緯と数字は
+    # `docs/pcb-tray.md`、決定は D-021。
+    #
+    # 代わりに、柱の影の間（z 146.1〜181.3）に **背面から差し込む C チャンネル**を
+    # 作る。棚（下）・押さえ（上）・前の当たり の 3 面で、+Y 側だけが開いている。
+    # **背面の開口が効く。** リムの段 (rim_step 2.0) で開口は x ±37 しかないので、
+    # トレーの幅は ±36.3 が上限。受けはそこまで内側へ伸ばさないと掴めない。
+    # 柱は z 137.9〜146.1 と 181.3〜190.7 にしかいないので、**トレーの z 範囲
+    # （149.3〜177.5）では受けを x のどこまで内側へ出しても柱に当たらない。**
+    "tray_z0": 149.3,            # 設計値。+X 側の棚の天面 = トレーの下端
+    "tray_z1": 176.9,            # 設計値。トレーの縁の上端（柱の影 181.3 の下）
+    "tray_lift": 1.2,            # 上の押さえまでの遊び。クリックの歯が乗り越えるぶん
+    "tray_seat_x": 34.5,         # 棚 / 押さえ / 当たり の内側の端
+    "tray_lip_x": 36.6,          # x 方向の位置決めリップの内側の端
+    "tray_lip_h": 1.5,           # リップの高さ（棚の天面から）
+    "tray_seat_t": 1.6,          # 棚と押さえの厚み（z 方向）
+    "tray_y0": 23.9,             # トレーの前面が当たる位置
+    "tray_stop_t": 2.0,          # 前の当たりの厚み（y 方向）
+    # **ポカヨケ（原則 3）**: -X 側の棚だけ 2.5 mm 高い。トレーの -X 側は
+    # そのぶん下の隅が欠けている。向きを間違えると欠けが逆側や上側に来て、
+    # 棚に乗り上げるか上の押さえに当たる。検証は tests/test_pcb_tray.py。
+    "tray_key_step": 2.5,
+    # 抜け止めのクリック。**棚の天面に切り欠き、トレーの下縁に歯**。
+    # フランクは 45 度なので、差し込むときは歯が棚に乗り上げ、home で落ちる。
+    # 引き出すときは指で 0.8 mm 持ち上げながら引く（工具ゼロ）。
+    "detent_h": 0.8,             # 設計値（歯の高さ = 切り欠きの深さ）
+    "detent_y0": 24.1,           # 切り欠きの y 始点。トレーの板厚 23.9〜26.4 の中
+    "detent_w": 2.1,             # 切り欠きの y 幅（歯 1.6 + 逃げ 0.25 x 2）
+    # トレーの縁と位置決めリップの隙間（片側）。**層厚 0.2 の 2 倍以上を取る。**
+    # 差し込み方向が造形方向と平行（段差を横切る）なので、ここを詰めると
+    # 積層のうねりで引っかかる。x の位置決めは ±0.4 で十分（Pi を載せるだけ）。
+    "tray_gap": 0.4,
     # --- リブ ---
     "rib_x": 33.0,
     "rib_w": 2.4,
@@ -176,9 +203,20 @@ PARAMS = {
 
 #: 背面の開口を上にして刷る。造形 Z = 箱の奥行き 47 mm。
 PRINT_ORIENTATION = {"rotate": (90, 0, 0)}
-#: スライドレールの摺動方向。造形時に水平に寝るので、積層の段差が摺動方向と
-#: **平行**に走る（段差を横切らない）。docs/AGENTS.md §4.9.3。
-SLIDE_AXIS = (0.0, 0.0, 1.0)
+#: 基板トレーの差し込み方向。**背面（+Y）から差し込む。**
+SLIDE_AXIS = (0.0, 1.0, 0.0)
+#: **原則（AGENTS.md §4.9.3-2「段差が摺動方向と平行に走る姿勢」）から外している
+#: ので根拠を書く。** 造形姿勢 rotate(90,0,0) では設計 Y が造形 Z になるため、
+#: この方向の摺動は**積層の段差を横切る。**
+#:
+#:   1. **z 方向のスライドは幾何的に成立しない。** 蓋の柱 6 点が x 26.9〜35.1 を
+#:      塞ぐので、幅 65 mm の Pi を載せたトレーは柱の z を通り抜けられない（D-021）。
+#:   2. **これは精度嵌合ではなく落とし込みである。** 片側 0.4 mm（= 層厚 0.2 の
+#:      2 倍）の隙間で、段差に引っかかる余地を残していない。
+#:   3. **荷重を受ける面は摺動しない。** トレーの重量は棚の天面（z 方向）が受け、
+#:      そこは差し込み方向と直交しているので擦れない。
+SLIDE_AXIS_NOTE = "z 方向は蓋の柱で塞がっている（D-021）。落とし込みなので隙間 0.4 mm"
+SLIDE_FIT_CLEARANCE = PARAMS["tray_gap"]
 
 W = PARAMS["width"]
 H = PARAMS["height"]
@@ -339,21 +377,66 @@ def _post(f, x, z, dia, pilot_depth, pilot, min_wall):
     return cq.Workplane("XY").newObject([body.cut(hole)])
 
 
-def _rail(p, f, sign):
-    """側壁のアリ溝レール（受け）。摺動方向は Z = 造形時に水平."""
-    x_wall = sign * (p["width"] / 2 - WALL)
-    base = f.wall(p["rail_base_w"]) + p["rail_gap"]
-    top = f.wall(p["rail_top_w"]) + p["rail_gap"]
-    d = p["rail_depth"]
-    y0 = p["rail_y"] - base / 2
-    pts = [
-        (y0, x_wall), (y0 + base, x_wall),
-        (y0 + (base - top) / 2 + top, x_wall - sign * d),
-        (y0 + (base - top) / 2, x_wall - sign * d),
-    ]
-    prof = cq.Workplane("YX").polyline(pts).close()
-    solid = prof.extrude(p["rail_z1"] - p["rail_z0"])
-    return solid.translate((0, 0, p["rail_z0"]))
+def tray_shelf_top(p, sign) -> float:
+    """その側の棚の天面 z。**-X 側だけ tray_key_step ぶん高い**（ポカヨケ）."""
+    return p["tray_z0"] + (p["tray_key_step"] if sign < 0 else 0.0)
+
+
+def tray_rib_bottom(p) -> float:
+    """上の押さえの下面 z。トレーの縁の上端 + 遊び."""
+    return p["tray_z1"] + p["tray_lift"]
+
+
+def tray_x_out(p) -> float:
+    """トレーの左右の端。位置決めリップから gap だけ逃がす.
+
+    **背面の開口 (x ±37) より内側**でなければ、そもそも箱に入らない。
+    """
+    return p["tray_lip_x"] - p["tray_gap"]
+
+
+def _tray_seat(p, f, sign):
+    """基板トレーの受け = 棚 + 位置決めリップ + 上の押さえ + 前の当たり.
+
+    **+Y 側だけが開いている C チャンネル**なので、トレーは背面から差し込む。
+    z 方向のアリ溝にできない理由は D-021 / `docs/pcb-tray.md`。
+
+    棚の天面には**クリック止めの切り欠き**（45 度フランク）を彫ってある。
+    差し込むときはトレーの歯が棚に乗り上げ、home で落ちて鳴る。
+
+    位置決めリップは、**背面の開口 (x ±37) を通れる幅のトレーを x 方向に
+    位置決めするため**にある。側壁 (x ±39) との隙間 2.7 mm ではガタが大きすぎる。
+    """
+    xw = sign * (p["width"] / 2 - WALL)          # ±39
+    xi = sign * p["tray_seat_x"]                 # ±34.5
+    xl = sign * p["tray_lip_x"]                  # ±36.6
+    y0 = p["tray_y0"] - p["tray_stop_t"]
+    y1 = Y_CAVITY_1
+    z_shelf = tray_shelf_top(p, sign)
+    z_rib = tray_rib_bottom(p)
+
+    def blk(xa, xb, ya, yb, za, zb):
+        lo, hi = min(xa, xb), max(xa, xb)
+        return cq.Solid.makeBox(hi - lo, yb - ya, zb - za, cq.Vector(lo, ya, za))
+
+    seat = (
+        blk(xi, xw, y0, y1, z_shelf - p["tray_seat_t"], z_shelf)      # 棚
+        .fuse(blk(xl, xw, y0, y1, z_shelf, z_shelf + p["tray_lip_h"]))  # 位置決めリップ
+        .fuse(blk(xi, xw, y0, y1, z_rib, z_rib + p["tray_seat_t"]))   # 上の押さえ
+        .fuse(blk(xi, xw, y0, p["tray_y0"], z_shelf, z_rib))          # 前の当たり
+        .clean()
+    )
+    # クリック止めの切り欠き（棚の天面。y-z 平面の台形を x 方向に押し出す）
+    h = p["detent_h"]
+    ya, yb = p["detent_y0"], p["detent_y0"] + p["detent_w"]
+    pts = [(ya, z_shelf + 0.1), (ya + h, z_shelf - h),
+           (yb - h, z_shelf - h), (yb, z_shelf + 0.1)]
+    lo, hi = min(xi, xw), max(xi, xw)
+    notch = (
+        cq.Workplane("YZ").polyline(pts).close()
+        .extrude(hi - lo).translate((lo, 0, 0))
+    )
+    return cq.Workplane("XY").newObject([seat]).cut(notch)
 
 
 def _label(text, x, z, p, face_y=0.0):
@@ -391,6 +474,20 @@ def features(p=PARAMS):
             f"pir_boss_{i}", (x, z), p["pir_boss_dia"],
             -0.5, Y_CAVITY_0 + p["pir_boss_depth"], margin=m, axis="Y",
             note="PIR キャリア用 M3 ヒートセット（止まり）"))
+    # トレーの受け。**柱との間に残る肉は 1.8 mm しかない**ので宣言して見張る。
+    # 棚・押さえ・当たりは接するのが正しいので、C チャンネルを 1 個の claim にまとめる
+    # （docs/AGENTS.md §4.5）。中の空間もトレーの所有物なので claim に含める。
+    for sign in (-1, 1):
+        x1 = sign * (p["width"] / 2 - WALL)
+        x0 = sign * p["tray_seat_x"]
+        out.append(feature.box(
+            f"tray_seat_{'p' if sign > 0 else 'n'}",
+            ((x0 + x1) / 2,
+             (p["tray_y0"] - p["tray_stop_t"] + Y_CAVITY_1) / 2),
+            (abs(x1 - x0), Y_CAVITY_1 - p["tray_y0"] + p["tray_stop_t"]),
+            tray_shelf_top(p, sign) - p["tray_seat_t"],
+            tray_rib_bottom(p) + p["tray_seat_t"],
+            margin=m, note="基板トレーの受け（C チャンネル）"))
     for i, (x, z) in enumerate(p["lid_bosses"]):
         out.append(feature.cylinder(
             f"lid_post_{i}", (x, z),
@@ -439,9 +536,9 @@ def build(p=PARAMS):
             p["lid_big_screw_dia"] if big else p["lid_screw_dia"],
             p["min_wall"]))
 
-    # --- 内部: スライドレール（受け） ---
+    # --- 内部: 基板トレーの受け（C チャンネル） ---
     for sign in (-1, 1):
-        part = part.union(_rail(p, f, sign))
+        part = part.union(_tray_seat(p, f, sign))
 
     # --- リブ（大きな前面のたわみ止め） ---
     for sign in (-1, 1):

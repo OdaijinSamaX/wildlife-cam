@@ -97,7 +97,9 @@ harness/           ハーネス本体
   component.py     内蔵部品を表す型
   feature.py       フィーチャの占有領域 (claim) を表す型と、その作り方
   fit.py           寸法補正テーブル（実測から起こした造形の癖の吸収）
-  checks/          7 つのチェック（下記）
+  seal.py          パッキンの面圧（蓋を梁・パッキンを非線形の弾性床として解く）
+  captive.py       捕捉式ねじが成立するための寸法の連鎖
+  checks/          12 のチェック（下記）
 parts/             内蔵部品のダミー形状（BOM プリミティブ）
 designs/           設計スクリプト
 tests/             ネガティブテスト
@@ -111,6 +113,8 @@ docs/window-options.md  カメラ窓の方式と材料の比較
 docs/field-procedure.md 現地作業手順の下書き
 docs/enclosure-body.md  カメラユニット本体の設計判断（貫通・締結・分割の是非）・限界
 docs/lid-fastening.md   蓋の締結点の数と位置。パッキンの面圧をたわみから解いた記録
+docs/captive-fasteners.md  蝶ねじを蓋に残す（落としたら二度と見つからない）
+docs/pcb-tray.md        基板トレー。アリ溝が蓋の柱と両立しないと分かるまで
 ```
 
 ## チェック
@@ -128,6 +132,7 @@ docs/lid-fastening.md   蓋の締結点の数と位置。パッキンの面圧�
 | 8 | openings | 内外を貫通する開口の一覧と面積（防水の要） |
 | 9 | fov | カメラの視野を筐体が遮っていないか |
 | 10 | seal | 締結点の間でパッキンの潰し量が保つか（蓋を梁、パッキンを弾性床として解く） |
+| 11 | captive | 捕捉式ねじが「落ちない・抜けきる・平らに座る」か（形にレイを飛ばして実測） |
 
 **すべてのチェックは PASS/FAIL だけでなく実測値を返す。**
 閾値の根拠と「何を見逃すか」は `docs/HARNESS.md` にある。

@@ -227,19 +227,36 @@ def test_thumbscrews_stay_with_the_lid_when_it_comes_off():
     assert r.status == PASS, (r.summary, r.details)
 
 
-def test_slide_axis_is_declared_and_horizontal_when_printed():
-    """摺動面の積層段差が摺動方向と平行になる姿勢であること."""
-    import numpy as np
+def test_slide_axis_is_declared_and_either_horizontal_or_justified():
+    """摺動面の積層段差が摺動方向と**平行**に走る姿勢が原則（AGENTS.md §4.9.3-2）.
+
+    外すなら「宣言して根拠を書く」ことが規約なので、**根拠と、段差を無害にする
+    隙間まで宣言してあること**をここで押さえる。黙って外すのは通さない。
+
+    2026-08-23 に摺動軸が Z -> Y に変わった。**z 方向のスライドは蓋の柱 6 点
+    （D-019）で塞がっていて幾何的に成立しない**ため（D-021 / docs/pcb-tray.md）。
+    Y は造形方向（造形 Z）と平行になるので、根拠の宣言が要る側に落ちる。
+    """
+    import cadquery as cq
 
     from harness import geom
 
     m = unit()
     ctx = load_design(BODY)
-    axis = np.array(m.SLIDE_AXIS, dtype=float)
+    axis = tuple(float(v) for v in m.SLIDE_AXIS)
+    assert sum(abs(v) for v in axis) == pytest.approx(1.0), "摺動軸は単位ベクトル"
+    # 摺動軸に沿った棒を造形姿勢に回し、造形 Z 方向に寝ているかを見る
     probe = geom.rotate_shape(
-        __import__("cadquery").Solid.makeCylinder(1.0, 10.0),
+        cq.Solid.makeCylinder(1.0, 10.0).rotate(
+            cq.Vector(0, 0, 0), cq.Vector(1, 0, 0), 90 if axis[1] else 0
+        ).rotate(cq.Vector(0, 0, 0), cq.Vector(0, 1, 0), 90 if axis[0] else 0),
         ctx.print_orientation["rotate"])
-    bb = probe.BoundingBox()
-    # 設計 Z が造形時に水平に寝ていること（造形 Z にならない）
-    assert bb.zlen == pytest.approx(2.0, abs=0.01), "摺動方向が造形方向と平行"
-    assert tuple(axis) == (0.0, 0.0, 1.0)
+    horizontal = probe.BoundingBox().zlen < 5.0
+    if horizontal:
+        return
+    note = getattr(m, "SLIDE_AXIS_NOTE", "")
+    assert note, "摺動方向が造形方向と平行なのに根拠 (SLIDE_AXIS_NOTE) が無い"
+    layer = 0.2
+    assert m.SLIDE_FIT_CLEARANCE >= 2 * layer, (
+        f"段差を横切る摺動なのに隙間 {m.SLIDE_FIT_CLEARANCE} mm が層厚 {layer} の"
+        "2 倍に満たない（段差に引っかかる）")
