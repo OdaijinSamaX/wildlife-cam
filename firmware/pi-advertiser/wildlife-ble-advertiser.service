@@ -1,0 +1,19 @@
+[Unit]
+Description=wildlife-cam gamma BLE advertiser (13-day unattended run)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=odaijinsamax
+# ★鍵と epoch を置くディレクトリ。public repo に実際の場所は書かないので、
+#   デプロイ時に運用者が書き換える（firmware/README.md「鍵の用意」）。
+Environment=WILDLIFE_GAMMA_STATE=/REPLACE-ME/state-dir
+ExecStart=/home/odaijinsamax/phase1/gamma-run.sh
+Restart=always
+RestartSec=5
+StandardOutput=append:/home/odaijinsamax/phase1/logs/advertiser.log
+StandardError=append:/home/odaijinsamax/phase1/logs/advertiser.log
+
+[Install]
+WantedBy=multi-user.target
