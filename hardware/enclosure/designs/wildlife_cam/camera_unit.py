@@ -29,25 +29,34 @@ PRINT_ORIENTATION = {"rotate": (90, 0, 0)}   背面の開口を上に向けて�
 閉じた箱は天井ができて刷れないので、本体は開口を上、蓋は平板として別に刷る。
 この姿勢なら**サポート不要**（`overhang` が実測する）。
 
-## 幅を 77 -> 84 mm に増やしたことと、その代償
+## 幅を 77 -> 84 -> **88** mm と増やしたことと、その代償
 
-**ドーム蓋の口径 76.0 mm が幅を決めた。** 案D の 77 mm には嵌合リブ（外径 79.4）が
-入らない。84 mm にすると
+**1 度目（77 -> 84）はドーム蓋の口径 76.0 mm が決めた。** 案D の 77 mm には
+嵌合リブ（外径 79.4）が入らない。
 
-| | 案D 検討時 | 本設計 | 差 |
+**2 度目（84 -> 88）は CSI レスキューを付けた Pi が決めた（D-022）。**
+microSD を挿したままの剛体幅が **76.9 mm** あり、**旧・背面開口 74.0 を通らない。**
+束縛していたのは内寸（78.0）ではなく**背面の開口**で、トレーは背面から
+引き出すので、そこを通らなければ現地で保守できない。
+**増やした片側 2 mm は全部内側（キャビティ）へ回してある。**
+
+| | 案D 検討時 | D-014 | **本設計（D-022）** |
 |---|---|---|---|
-| 幅 | 77.0 mm | **84.0 mm** | +7.0 |
-| 幹（直径 48）からの張り出し 片側 | 14.5 mm | **18.0 mm** | **+3.5（+24%）** |
-| 受風面積 | 176 cm2 | 166 cm2 | -6%（高さを減らしたぶん） |
+| 幅 | 77.0 mm | 84.0 mm | **88.0 mm** |
+| 背面の開口 | — | 74.0 mm | **78.5 mm**（`rim_step` 2.0 -> 1.75） |
+| 幹（直径 48）からの張り出し 片側 | 14.5 mm | 18.0 mm | **20.0 mm** |
+| 受風面積 | 176 cm2 | 166 cm2 | **174 cm2**（+4.8%） |
 
-**張り出しは増えたが、受風面積は高さを減らしたぶん差し引きで減っている。**
-これ以上幅を詰めるにはドームを別の既製品に変えるしかない。
+**張り出しの上限はここで打ち止め**（`tests/test_camera_unit.py` が押さえている）。
+これ以上幅を詰めるには、ドームを別の既製品に変えるか、
+`docs/pcb-tray.md` §2 の x の収支を削るしかない。
 
 ## 優先順位（指示のとおり）
 
   1. 高さを超えない -> 198 mm（上限 229 に対し 31 mm の余裕）
-  2. 張り出しを増やさない -> +3.5 mm。ドームの口径で決まっており、これが下限
-  3. 体積 -> 84 x 47 x 198 = 782 cm3（蓋とドームを除く）
+  2. 張り出しを増やさない -> **D-022 で +2.0 mm を受け入れた**（現地で保守できる
+     ことを優先した。理由と不採用案は D-022）
+  3. 体積 -> 88 x 47 x 198 = 819 cm3（蓋とドームを除く）
 
 ## 密閉の考え方
 
@@ -92,18 +101,30 @@ import cadquery as cq
 from harness import feature, fit, fov
 from designs.wildlife_cam._layout_common import Box, onyx_assembly, route_solid
 from harness.component import Component
-from parts import cable_gland, dome_lid, gore_vent, hcsr501, otg_cable
+from parts import (cable_gland, dome_lid, gore_vent, hcsr501, otg_cable,
+                   pi_zero_2w_rescue)
 
 DESIGN_NAME = "camera_unit"
 FIT_TABLE = fit.ASA_P1S
 
 PARAMS = {
     # --- 外形 ---
-    "width": 84.0,               # ドーム嵌合リブ 外径 79.4 + 肉 2.3 x 2
+    # **84.0 から 88.0 へ改訂した（D-022）。** 84 は「ドーム嵌合リブ 外径 79.4 +
+    # 肉 2.3 x 2」から出した数字だったが、**CSI レスキューブラケットを付けた Pi
+    # （microSD 込みで 76.9 mm）が背面の開口 74.0 を通らない**ことが実測で分かった。
+    # **増やした片側 2 mm は全部内側（キャビティ）へ回す。** 壁は 3.0 のまま、
+    # 開口が 74.0 -> 78.5 になる。前面のドーム周りは結果として肉が 2.3 -> 4.3 に
+    # 増えるが、**ドームは中心から動かさない**（窓の光軸を動かしたくない）。
+    "width": 88.0,               # D-022（旧 84.0）
     "height": 198.0,             # 案D の 229 から 31 mm 減らした
     "wall": 3.0,
     "cavity_depth": 41.0,        # 前壁の内面から背面の合わせ面まで
-    "rim_step": 2.0,             # 背面の合わせ面を内側へ張り出す量
+    # 背面の合わせ面を内側へ張り出す量。**下限は 1.35**（= パッキン溝の幅の半分。
+    # これより薄くすると蓋の溝が本体の land から外れる。
+    # tests/test_camera_unit.py::test_body_land_carries_the_whole_gasket_groove）。
+    # **2.0 -> 1.75 に薄くした。** 開口を 78.0 -> 78.5 まで広げないと、トレーが
+    # 棚に載る掛かり代（片側 0.4）を取れないため。溝の内側に残る land は 0.4 mm。
+    "rim_step": 1.75,            # D-022（旧 2.0）
     "rim_t": 3.0,                # 合わせ面のフランジ厚
     "min_wall": 1.6,
     "feature_margin": 0.8,
@@ -140,14 +161,15 @@ PARAMS = {
     # 出した（圧縮率 13.3% < 下限 15%）。中央に 1 対足して 21% に戻してある。
     # 根拠と比較した案は docs/lid-fastening.md と D-019。
     # 柱は前壁から背面 land まで通す（浮かないし、箱のねじれにも効く）。
-    # x=±31 はパッキン溝（37.65〜40.35）から座ぐりを 2 mm 以上離すため。
+    # x=±33 はパッキン溝（39.65〜42.35）から座ぐりを 2 mm 以上離すため
+    # （幅 88 化に合わせて ±31 -> ±33 / -30 -> -32 へ 2 mm 外へ動かした。D-022）。
     # **中央の対が z=142 なのは、左 (x=-31) で内蔵部品が空けている唯一の窓だから。**
     # Onyx が z 21〜136 を、Pi が z 148〜178 を塞いでいる（clearance が実測する）。
     # 真ん中 (z=99) に置ければ 24.4% になるが Onyx が居る。**2026-08-23 に
     # 「Onyx は動かさない」と人間が決定した**ので z=142 で確定（D-019）。
     # **並び順 = 現地で締める順序**（蓋の刻印 1..6）。中央 -> 対角 -> 対角。
-    "lid_bosses": ((-31.0, 142.0), (31.0, 142.0), (-31.0, 12.0),
-                   (31.0, 186.0), (31.0, 12.0), (-30.0, 186.0)),
+    "lid_bosses": ((-33.0, 142.0), (33.0, 142.0), (-33.0, 12.0),
+                   (33.0, 186.0), (33.0, 12.0), (-32.0, 186.0)),
     # **ポカヨケ**: 1 本だけ M5、かつ x を 1 mm ずらしてある。180 度回すと
     # M5 のねじが M4 のインサートに入らず、穴位置も合わない。
     # 中央の対が上下非対称（z=142 だけ）なので、**上下逆では穴自体が合わない。**
@@ -155,45 +177,69 @@ PARAMS = {
     "lid_big_screw_dia": 6.2,
     "lid_big_boss_dia": 9.4,
 
-    # --- 内部: 基板トレーの受け（C チャンネル） ---
+    # --- 内部: 基板トレーの受け ---
     #
-    # **ここは 2026-08-23 に作り直した。** それまでは z 方向のアリ溝レール
-    # （z 128〜194）だったが、**蓋の柱 6 点（D-019）と両立しない**ことが分かった。
-    # 柱が x 26.9〜35.1 を塞ぐので内側に残る幅は 53.8 mm しかなく、**幅 65 mm の
-    # Pi を載せたトレーは柱の z を通り抜けられない。** 経緯と数字は
-    # `docs/pcb-tray.md`、決定は D-021。
+    # **2026-08-23 に 2 度目の作り直し（D-023）。** 1 度目（D-021）は側壁から
+    # 内側へ伸ばした C チャンネルだったが、**CSI レスキューブラケットを付けた Pi は
+    # 幅 76.9 mm（microSD 込み）あり、側壁から伸ばした棚の x 範囲を Pi 自身が
+    # 占めてしまう。** 棚を Pi の外（x >= 38.85）まで下げると、今度は棚が
+    # 2.15 mm の細いひさしになり、トレーが載る掛かり代が取れない。
     #
-    # 代わりに、柱の影の間（z 146.1〜181.3）に **背面から差し込む C チャンネル**を
-    # 作る。棚（下）・押さえ（上）・前の当たり の 3 面で、+Y 側だけが開いている。
-    # **背面の開口が効く。** リムの段 (rim_step 2.0) で開口は x ±37 しかないので、
-    # トレーの幅は ±36.3 が上限。受けはそこまで内側へ伸ばさないと掴めない。
-    # 柱は z 137.9〜146.1 と 181.3〜190.7 にしかいないので、**トレーの z 範囲
-    # （149.3〜177.5）では受けを x のどこまで内側へ出しても柱に当たらない。**
-    "tray_z0": 149.3,            # 設計値。+X 側の棚の天面 = トレーの下端
-    "tray_z1": 176.9,            # 設計値。トレーの縁の上端（柱の影 181.3 の下）
-    "tray_lift": 1.2,            # 上の押さえまでの遊び。クリックの歯が乗り越えるぶん
-    "tray_seat_x": 34.5,         # 棚 / 押さえ / 当たり の内側の端
-    "tray_lip_x": 36.6,          # x 方向の位置決めリップの内側の端
-    "tray_lip_h": 1.5,           # リップの高さ（棚の天面から）
-    "tray_seat_t": 1.6,          # 棚と押さえの厚み（z 方向）
+    # 代わりに **荷重は「前壁から張り出した全幅の床」で受ける。**
+    # 側壁の棚をやめたので、**棚の z が柱に縛られなくなった**のが効いている。
+    #
+    #   棚（x ±34.5〜41・z 146.6〜148.0） … -Z（自重）。柱の影 146.1 のすぐ上
+    #   上の押さえ（x ±20〜27）           … +Z。**天井から吊る**ので x の予算が要らない
+    #   位置決めリップ（x ±39.25〜41）    … ±X
+    #   前の当たり                        … -Y
+    #   クリック止めの歯                  … +Y（蓋を開けているとき）
+    #
+    # **x の予算はもう 1 mm も余っていない**（下の x 収支）。だから
+    # **+Z の押さえは「天井から吊ったフック」にした。** 側壁から内側へ出すと
+    # Pi (|x| <= 38.45) と食い合うが、天井から吊れば x は柱の間 (|x| <= 27) で足り、
+    # **z も Pi の上端 178.5 より上なので干渉しない。**
+    #
+    #   x 収支（片側）: 開口 39.25 -> トレー 38.85 (0.4) -> Pi 38.45 (0.4)
+    #                   リップ内端 39.25 / 壁の内面 41.0（リップ厚 1.75）
+    #   z 収支: 柱 146.9 -> 棚 147.0〜149.2 -> Pi 149.7〜179.7 -> 縁 180.8
+    #           -> フック 180.6 (-X) / 181.4 (+X) -> 柱 181.3 は |x|<=25 に無い
+    #
+    # **ポカヨケ（原則 3）も「上の押さえ」に移した。** 棚に段を付けると Pi の
+    # 下端（z 148.5）と食い合うが、押さえは z 179 より上にあって **Pi が居ない。**
+    # 段は 1.0 mm —— **1.5 では、下げた側の押さえが「0.6 持ち上げた Pi の上端」に
+    # 当たる**（178.5 + 0.6 = 179.1 vs 180.8 - 1.5 = 179.3 で余裕 0.2 しかない）。
+    # 棚の**下面は z 147.0**。柱 (z=142, φ8.2 -> z 137.9〜146.1) の claim が
+    # マージン 0.8 込みで 146.9 まで来るので、そこを踏まないぎりぎりの位置。
+    "tray_z0": 149.2,            # 設計値。棚の天面 = トレーの下端
+    # トレーの縁の上端（+X 側）。**柱 (z=186, 大 φ9.4 -> z 181.3〜) の 0.5 mm 下。**
+    "tray_z1": 180.8,            # 設計値
+    # 棚とフックの厚み（z 方向）。**クリック止めの切り欠き 0.4 を彫っても
+    # 1.8 mm 残る**厚みにしてある（1.4 だと残り 0.9 で `wall` が落ちた）。
+    "tray_ledge_t": 2.2,
+    "tray_lift": 0.6,            # 上の押さえまでの遊び。歯が乗り越えるぶん
+    "tray_seat_x": 34.5,         # 棚 / 前の当たり の内側の端（掛かり代 4.35 mm）
+    # 天井から吊るフックの x 範囲。**大柱 (x=-32, φ9.4) の claim が
+    # マージン込みで x -26.5 まで来る**ので、25.0 で止める（claim は 25.8）。
+    "tray_hook_x": (18.0, 25.0),
+    "tray_lip_x": 39.25,         # x 方向の位置決めリップの内側の端
+    "tray_lip_h": 4.0,           # リップの高さ（棚の天面から）
     "tray_y0": 23.9,             # トレーの前面が当たる位置
     "tray_stop_t": 2.0,          # 前の当たりの厚み（y 方向）
-    # **ポカヨケ（原則 3）**: -X 側の棚だけ 2.5 mm 高い。トレーの -X 側は
-    # そのぶん下の隅が欠けている。向きを間違えると欠けが逆側や上側に来て、
-    # 棚に乗り上げるか上の押さえに当たる。検証は tests/test_pcb_tray.py。
-    "tray_key_step": 2.5,
-    # 抜け止めのクリック。**棚の天面に切り欠き、トレーの下縁に歯**。
-    # フランクは 45 度なので、差し込むときは歯が棚に乗り上げ、home で落ちる。
-    # 引き出すときは指で 0.8 mm 持ち上げながら引く（工具ゼロ）。
-    "detent_h": 0.8,             # 設計値（歯の高さ = 切り欠きの深さ）
+    # **ポカヨケ（原則 3）**: 上の押さえは -X 側だけ 1.0 mm 低い。トレーの縁も
+    # -X 側だけ 1.0 mm 低い。**左右・前後・上下のどの反転でも、高い方の縁が
+    # 低い方のフックに当たる**（トレーは棚に載っているので下へ逃げられない）。
+    # 検証と対照実験は tests/test_pcb_tray.py。
+    # **0.8 なのは、下げた側のフック (180.8 - 0.8 + 0.6 = 180.6) が
+    # 「0.6 持ち上げた Pi の上端」(179.7 + 0.6 = 180.3) に当たらない上限**だから。
+    "tray_key_step": 0.8,
+    # 抜け止めのクリック。**床の天面に切り欠き、トレーの下縁に歯**。
+    "detent_h": 0.4,             # 設計値（歯の高さ = 切り欠きの深さ）
     "detent_y0": 24.1,           # 切り欠きの y 始点。トレーの板厚 23.9〜26.4 の中
     "detent_w": 2.1,             # 切り欠きの y 幅（歯 1.6 + 逃げ 0.25 x 2）
     # トレーの縁と位置決めリップの隙間（片側）。**層厚 0.2 の 2 倍以上を取る。**
-    # 差し込み方向が造形方向と平行（段差を横切る）なので、ここを詰めると
-    # 積層のうねりで引っかかる。x の位置決めは ±0.4 で十分（Pi を載せるだけ）。
     "tray_gap": 0.4,
     # --- リブ ---
-    "rib_x": 33.0,
+    "rib_x": 35.0,          # 幅 88 化に合わせて外へ（D-022）
     "rib_w": 2.4,
     "rib_h": 5.0,
     # --- 刻印 ---
@@ -215,7 +261,14 @@ SLIDE_AXIS = (0.0, 1.0, 0.0)
 #:      2 倍）の隙間で、段差に引っかかる余地を残していない。
 #:   3. **荷重を受ける面は摺動しない。** トレーの重量は棚の天面（z 方向）が受け、
 #:      そこは差し込み方向と直交しているので擦れない。
-SLIDE_AXIS_NOTE = "z 方向は蓋の柱で塞がっている（D-021）。落とし込みなので隙間 0.4 mm"
+SLIDE_AXIS_NOTE = ("z 方向は蓋の柱で塞がっている（D-021）。"
+                   "落とし込みなので隙間 0.4 mm（D-023 でもこの向きは変えていない）")
+
+#: **`UNDER_BOARD` を宣言しない理由**（`docs/AGENTS.md` §6。考え忘れではない）。
+#: 基板を受けているのは**トレー**（`pcb_tray`）であって本体ではない。
+#: 本体の中で基板の下面に近づく面は無いので、宣言する突起が無い。
+#: **Onyx を保持する設計を起こしたら、そこでは宣言が要る**（§9 の未設計 1 番）。
+UNDER_BOARD: list = []
 SLIDE_FIT_CLEARANCE = PARAMS["tray_gap"]
 
 W = PARAMS["width"]
@@ -228,13 +281,38 @@ Y_BACK = Y_CAVITY_1 + PARAMS["rim_t"]               # 47.0
 # --- 内蔵部品の配置 ---------------------------------------------------------
 #: 剛体ブロック 115 mm の USB-A 側の端。ここから -Z へ 115 伸びる（z 6..121）。
 ONYX_AT = (-18.1, 34.4, 136.0)
-PI_BOX = Box(name="pi", center=(0.0, 36.0, 163.0), size=(65.0, 10.2, 30.0),
-             note="横向き。コネクタ辺は下 (z=148) を向く")
-MICRO_BOX = Box(name="otg_micro", center=(14.3, 34.2, 132.6),
+#: **CSI レスキューブラケットを装着した Pi**（`parts/pi_zero_2w_rescue`）。
+#: 裸の Pi (65.0) ではなく **microSD 込みの剛体幅 76.9 mm** で見る。
+#: **背面の開口 (x ±39.25) の中央に置く**ので、基板の中心は x = -1.85 になる
+#: （microSD が -X に 4.1 出るぶん、基板は +X 側へ寄らない）。
+_R = pi_zero_2w_rescue
+PI_RIGID_W = _R.rigid_width()                       # 76.9
+#: 基板（PCB）の -X 端。= -(76.9/2) + microSD の突出 4.1
+PI_BOARD_X0 = -PI_RIGID_W / 2 + _R.SD_CARD_PROTRUSION      # -34.35
+PI_BOARD_CX = PI_BOARD_X0 + _R.PCB_L / 2                   # -1.85
+#: トレーの板の上面（`pcb_tray` と**同じ数字を二重に持たない**ための導出）
+TRAY_PLATE_Y1 = PARAMS["tray_y0"] + 2.5
+#: Pi の座面（ボスの天面）。**ナット 2.7 mm + 逃げ 0.4 を空ける**（D-023 / underside）
+PI_BOSS_H = _R.RELIEF_DEPTH + 0.7                          # 3.4
+PI_BOARD_Y = TRAY_PLATE_Y1 + PI_BOSS_H                     # 基板下面 29.8
+PI_Z0 = PARAMS["tray_z0"] + 0.5                            # 棚の天面 + 0.5
+PI_BOX = Box(
+    name="pi",
+    center=(0.0,
+            (PI_BOARD_Y - _R.RESCUE_BOT_H + PI_BOARD_Y + _R.PCB_T + _R.TOP_COMP_H) / 2,
+            PI_Z0 + _R.PCB_W / 2),
+    size=(PI_RIGID_W,
+          _R.RESCUE_BOT_H + _R.PCB_T + _R.TOP_COMP_H,
+          _R.PCB_W),
+    note="横向き。コネクタ辺は下を向く。**レスキュー + microSD 込みの剛体幅 76.9**")
+#: micro-USB データ口。基板の左角から 46.8 mm（`parts/pi_zero_2w` の実測から）。
+MICRO_X = PI_BOARD_X0 + 46.8                               # 12.45
+MICRO_BOX = Box(name="otg_micro",
+                center=(MICRO_X, PI_BOARD_Y + 3.3, PI_Z0 - 30.8 / 2),
                 size=(9.9, 6.8, 30.8), note="データ口（左角から 46.8）から -Z に 30.8")
 FLEX_POINTS = [
-    (14.3, 34.2, 117.2), (14.3, 34.3, 128.0), (4.0, 34.4, 141.0),
-    (-18.1, 34.4, 141.0),
+    (MICRO_X, PI_BOARD_Y + 3.3, PI_Z0 - 30.8), (MICRO_X, 34.3, 129.7),
+    (4.0, 34.4, 141.0), (-18.1, 34.4, 141.0),
 ]
 FLEX_R = otg_cable.CABLE_DIA / 2 + 2.0
 
@@ -377,64 +455,86 @@ def _post(f, x, z, dia, pilot_depth, pilot, min_wall):
     return cq.Workplane("XY").newObject([body.cut(hole)])
 
 
-def tray_shelf_top(p, sign) -> float:
-    """その側の棚の天面 z。**-X 側だけ tray_key_step ぶん高い**（ポカヨケ）."""
-    return p["tray_z0"] + (p["tray_key_step"] if sign < 0 else 0.0)
+def tray_shelf_top(p) -> float:
+    """棚の天面 z。**左右で同じ。**
+
+    D-021 では -X 側だけ 2.5 mm 高くしてポカヨケにしていたが、**そこにはもう
+    Pi の下端が来る**（幅 76.9 の Pi が棚の x 範囲まで届く）。段は
+    `tray_hook_bottom` へ移した（D-023）。**だから sign を取らない** ——
+    昔の呼び出しが残っていたら、ここで TypeError になって気づける。
+    """
+    return p["tray_z0"]
 
 
-def tray_rib_bottom(p) -> float:
-    """上の押さえの下面 z。トレーの縁の上端 + 遊び."""
-    return p["tray_z1"] + p["tray_lift"]
+def tray_edge_top(p, sign) -> float:
+    """トレーの縁の上端 z。**-X 側だけ tray_key_step ぶん低い**（ポカヨケ）."""
+    return p["tray_z1"] - (p["tray_key_step"] if sign < 0 else 0.0)
+
+
+def tray_hook_bottom(p, sign) -> float:
+    """天井から吊ったフックの下面 z。縁の上端 + 遊び（**左右で段が付く**）."""
+    return tray_edge_top(p, sign) + p["tray_lift"]
 
 
 def tray_x_out(p) -> float:
     """トレーの左右の端。位置決めリップから gap だけ逃がす.
 
-    **背面の開口 (x ±37) より内側**でなければ、そもそも箱に入らない。
+    **背面の開口より内側**でなければ、そもそも箱に入らない。
     """
     return p["tray_lip_x"] - p["tray_gap"]
 
 
-def _tray_seat(p, f, sign):
-    """基板トレーの受け = 棚 + 位置決めリップ + 上の押さえ + 前の当たり.
+def back_opening_x(p) -> float:
+    """背面の開口の半幅。**リムの段のぶん側壁より内側**（トレーはここを通る）."""
+    return p["width"] / 2 - WALL - p["rim_step"]
 
-    **+Y 側だけが開いている C チャンネル**なので、トレーは背面から差し込む。
-    z 方向のアリ溝にできない理由は D-021 / `docs/pcb-tray.md`。
+
+def _tray_receiver(p, f):
+    """基板トレーの受け = 棚 + 位置決めリップ + 前の当たり + 天井から吊るフック.
+
+    **2 度目の作り直し（D-023）。** 側壁から内側へ伸ばす C チャンネル（D-021）は、
+    CSI レスキューを付けた Pi（幅 76.9）と x を奪い合って成立しない。
+    +Z の押さえだけを**天井から吊る**ことで、x の予算を使わずに解いた。
 
     棚の天面には**クリック止めの切り欠き**（45 度フランク）を彫ってある。
-    差し込むときはトレーの歯が棚に乗り上げ、home で落ちて鳴る。
-
-    位置決めリップは、**背面の開口 (x ±37) を通れる幅のトレーを x 方向に
-    位置決めするため**にある。側壁 (x ±39) との隙間 2.7 mm ではガタが大きすぎる。
     """
-    xw = sign * (p["width"] / 2 - WALL)          # ±39
-    xi = sign * p["tray_seat_x"]                 # ±34.5
-    xl = sign * p["tray_lip_x"]                  # ±36.6
+    xw = p["width"] / 2 - WALL                   # 41.0
     y0 = p["tray_y0"] - p["tray_stop_t"]
     y1 = Y_CAVITY_1
-    z_shelf = tray_shelf_top(p, sign)
-    z_rib = tray_rib_bottom(p)
+    z_shelf = tray_shelf_top(p)
+    ceil_z = p["height"] - WALL                  # 天井の内面
 
     def blk(xa, xb, ya, yb, za, zb):
         lo, hi = min(xa, xb), max(xa, xb)
         return cq.Solid.makeBox(hi - lo, yb - ya, zb - za, cq.Vector(lo, ya, za))
 
-    seat = (
-        blk(xi, xw, y0, y1, z_shelf - p["tray_seat_t"], z_shelf)      # 棚
-        .fuse(blk(xl, xw, y0, y1, z_shelf, z_shelf + p["tray_lip_h"]))  # 位置決めリップ
-        .fuse(blk(xi, xw, y0, y1, z_rib, z_rib + p["tray_seat_t"]))   # 上の押さえ
-        .fuse(blk(xi, xw, y0, p["tray_y0"], z_shelf, z_rib))          # 前の当たり
-        .clean()
-    )
+    parts = []
+    for sign in (-1, 1):
+        xi = sign * p["tray_seat_x"]              # ±34.5
+        xl = sign * p["tray_lip_x"]               # ±39.25
+        parts.append(blk(xi, sign * xw, y0, y1,
+                         z_shelf - p["tray_ledge_t"], z_shelf))          # 棚
+        parts.append(blk(xl, sign * xw, y0, y1,
+                         z_shelf, z_shelf + p["tray_lip_h"]))            # リップ
+        parts.append(blk(xi, sign * xw, y0, p["tray_y0"],
+                         z_shelf, tray_edge_top(p, sign)))               # 前の当たり
+        # 天井から吊るフック（**x は柱の間。z は Pi の上端より上**）
+        h0, h1 = p["tray_hook_x"]
+        parts.append(blk(sign * h0, sign * h1, y0, y1,
+                         tray_hook_bottom(p, sign), ceil_z))
+    seat = parts[0]
+    for q in parts[1:]:
+        seat = seat.fuse(q)
+    seat = seat.clean()
+
     # クリック止めの切り欠き（棚の天面。y-z 平面の台形を x 方向に押し出す）
     h = p["detent_h"]
     ya, yb = p["detent_y0"], p["detent_y0"] + p["detent_w"]
     pts = [(ya, z_shelf + 0.1), (ya + h, z_shelf - h),
            (yb - h, z_shelf - h), (yb, z_shelf + 0.1)]
-    lo, hi = min(xi, xw), max(xi, xw)
     notch = (
         cq.Workplane("YZ").polyline(pts).close()
-        .extrude(hi - lo).translate((lo, 0, 0))
+        .extrude(2 * xw).translate((-xw, 0, 0))
     )
     return cq.Workplane("XY").newObject([seat]).cut(notch)
 
@@ -474,20 +574,25 @@ def features(p=PARAMS):
             f"pir_boss_{i}", (x, z), p["pir_boss_dia"],
             -0.5, Y_CAVITY_0 + p["pir_boss_depth"], margin=m, axis="Y",
             note="PIR キャリア用 M3 ヒートセット（止まり）"))
-    # トレーの受け。**柱との間に残る肉は 1.8 mm しかない**ので宣言して見張る。
-    # 棚・押さえ・当たりは接するのが正しいので、C チャンネルを 1 個の claim にまとめる
+    # トレーの受け。**柱との間に残る肉が薄い**ので宣言して見張る。
+    # 棚・リップ・当たりは接するのが正しいので側ごとに 1 個の claim にまとめる
     # （docs/AGENTS.md §4.5）。中の空間もトレーの所有物なので claim に含める。
     for sign in (-1, 1):
-        x1 = sign * (p["width"] / 2 - WALL)
+        s_ = "p" if sign > 0 else "n"
         x0 = sign * p["tray_seat_x"]
+        x1 = sign * (p["width"] / 2 - WALL)
+        yc = (p["tray_y0"] - p["tray_stop_t"] + Y_CAVITY_1) / 2
+        yl = Y_CAVITY_1 - p["tray_y0"] + p["tray_stop_t"]
         out.append(feature.box(
-            f"tray_seat_{'p' if sign > 0 else 'n'}",
-            ((x0 + x1) / 2,
-             (p["tray_y0"] - p["tray_stop_t"] + Y_CAVITY_1) / 2),
-            (abs(x1 - x0), Y_CAVITY_1 - p["tray_y0"] + p["tray_stop_t"]),
-            tray_shelf_top(p, sign) - p["tray_seat_t"],
-            tray_rib_bottom(p) + p["tray_seat_t"],
-            margin=m, note="基板トレーの受け（C チャンネル）"))
+            f"tray_seat_{s_}", ((x0 + x1) / 2, yc), (abs(x1 - x0), yl),
+            p["tray_z0"] - p["tray_ledge_t"],
+            p["tray_z0"] + p["tray_lip_h"],
+            margin=m, note="基板トレーの棚・位置決めリップ・前の当たり"))
+        h0, h1 = p["tray_hook_x"]
+        out.append(feature.box(
+            f"tray_hook_{s_}", (sign * (h0 + h1) / 2, yc), (h1 - h0, yl),
+            tray_hook_bottom(p, sign), p["height"] - WALL,
+            margin=m, note="天井から吊る +Z の押さえ（ポカヨケの段つき）"))
     for i, (x, z) in enumerate(p["lid_bosses"]):
         out.append(feature.cylinder(
             f"lid_post_{i}", (x, z),
@@ -536,9 +641,8 @@ def build(p=PARAMS):
             p["lid_big_screw_dia"] if big else p["lid_screw_dia"],
             p["min_wall"]))
 
-    # --- 内部: 基板トレーの受け（C チャンネル） ---
-    for sign in (-1, 1):
-        part = part.union(_tray_seat(p, f, sign))
+    # --- 内部: 基板トレーの受け（棚 + リップ + 当たり + 天井から吊るフック） ---
+    part = part.union(_tray_receiver(p, f))
 
     # --- リブ（大きな前面のたわみ止め） ---
     for sign in (-1, 1):

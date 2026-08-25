@@ -49,12 +49,22 @@ def test_design_height_was_reduced_from_the_layout_study():
 
 
 def test_overhang_from_trunk_is_reported_and_bounded():
-    """幅を増やしたぶんの張り出しを数値で押さえる."""
+    """幅を増やしたぶんの張り出しを数値で押さえる.
+
+    **2026-08-23 に 84 -> 88 になった（D-022）。** CSI レスキューを付けた Pi が
+    microSD 込みで 76.9 mm あり、旧・背面開口 74.0 を通らなかったため。
+    張り出しは 18.0 -> **20.0**（受風面積 +4.8%）で、**人間が受け入れた代償**である。
+
+    **上限はここで打ち止めにする。** 設置先は屋久島の直径 48〜64 mm の細い木で
+    （D-016）、張り出しはそのまま風のモーメントになる。
+    これ以上増やす提案が出たら、**まず内部の x の収支**（`docs/pcb-tray.md` §2）を
+    見直すこと —— いまは全部の隙間が 0.4 mm なので、増やす前に削る先が無いか確かめる。
+    """
     m = unit()
-    assert m.PARAMS["width"] == 84.0
-    assert m.overhang_from_trunk_mm(trunk_dia=48.0) == pytest.approx(18.0)
-    # 案D 検討時は 14.5。ドームの口径で決まる下限なので、これ以上増やさない
-    assert m.overhang_from_trunk_mm(trunk_dia=48.0) <= 18.0
+    assert m.PARAMS["width"] == 88.0
+    assert m.overhang_from_trunk_mm(trunk_dia=48.0) == pytest.approx(20.0)
+    # 案D 検討時は 14.5 / D-014 で 18.0 / D-022 で 20.0。**ここで打ち止め**
+    assert m.overhang_from_trunk_mm(trunk_dia=48.0) <= 20.0
 
 
 def test_lens_stays_within_16mm_of_the_dome_window():

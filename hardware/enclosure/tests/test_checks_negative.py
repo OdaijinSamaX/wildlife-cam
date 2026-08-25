@@ -21,6 +21,7 @@ COUPON = ROOT / "designs" / "wildlife_cam" / "fit_coupon.py"
 BEZEL = ROOT / "designs" / "wildlife_cam" / "pir_bezel.py"
 UNCLAIMED = ROOT / "tests" / "fixtures" / "unclaimed_hole.py"
 LID = ROOT / "designs" / "wildlife_cam" / "camera_unit_lid.py"
+TRAY = ROOT / "designs" / "wildlife_cam" / "pcb_tray.py"
 
 
 def result(path, only, override=None):
@@ -38,6 +39,7 @@ def result(path, only, override=None):
     (COUPON, "overhang"),
     (BEZEL, "wall"), (BEZEL, "clearance"), (BEZEL, "openings"), (BEZEL, "layout"),
     (LID, "seal"),
+    (TRAY, "underside"),
 ])
 def test_baseline_designs_pass(path, check):
     r = result(path, check)
@@ -324,3 +326,63 @@ def test_captive_measures_the_pocket_from_the_built_shape_not_the_params():
     b = result(LID, "captive", {"retainer_pocket_d": 12.0})
     ka = "screw_1: 後退できる量 travel [mm]"
     assert b.measurements[ka] - a.measurements[ka] == pytest.approx(1.5, abs=0.05)
+
+
+# --- 13. 基板の下の突起 -> underside が FAIL --------------------------------
+#
+# **12 種のどれも「実装部品が基板の下に出ている」ことを捕まえなかった。**
+# `clearance` は座面のクリアランスを 0 にしてよい規約（AGENTS.md §4）なので、
+# 基板の下にぶら下がっているものを「意図した接触」として飲み込んでしまう。
+# 実際に CSI レスキューのナット（基板下面から 2.7 mm。実測 2026-08-23）で
+# それが起きた。ここが全部 PASS しか返さなくなったら、underside はもう仕事をしていない。
+
+
+def test_underside_fails_when_the_standoff_is_shorter_than_the_nut():
+    """**座面を 2.0 mm に縮めると、2.7 mm のナットが板に当たる。**
+
+    現物では「基板が座らない / ねじを締めると基板が反る」になる。
+    """
+    r = result(TRAY, "underside", {"boss_h": 2.0})
+    assert r.status == FAIL, r.summary
+    rows = {row["突起"]: row for row in r.table}
+    assert rows["rescue_nut_0"]["verdict"] == FAIL
+    assert rows["rescue_nut_0"]["実測隙間_mm"] == pytest.approx(2.0, abs=0.05)
+    assert rows["rescue_nut_0"]["要求_mm"] == pytest.approx(3.1)
+    # 0.4 mm しか出ていない Pi 自身の実装部品は、2.0 mm あれば当たらない
+    assert rows["pi_bot_comp"]["verdict"] == "PASS"
+
+
+def test_underside_fails_when_the_pocket_is_missing_entirely():
+    """**ポケットを塞ぐと、パッドの天面が基板下面と同じ高さに来る。**
+
+    これは「受け面が基板にちょうど接している = 隙間 0」であって、
+    **「その下の板の前面までが隙間」ではない。** レイの交点を
+    `depth > 0` で拾うと、ちょうど基板面にある面が除外されて
+    **5.9 mm という嘘の隙間**が出る（実際にそう書いて取り逃がした）。
+    ここはその回帰テストでもある。
+    """
+    r = result(TRAY, "underside", {"nut_bore": 0.0})
+    assert r.status == FAIL, r.summary
+    rows = {row["突起"]: row for row in r.table}
+    assert rows["rescue_nut_0"]["verdict"] == FAIL
+    assert rows["rescue_nut_0"]["実測隙間_mm"] == pytest.approx(0.0, abs=0.01), \
+        "基板面にある受け面を『隙間ゼロ』と読めていない"
+    assert "当たる" in " ".join(r.details)
+
+
+def test_underside_measures_the_shape_not_the_declared_numbers():
+    """**PARAMS の数字ではなく形から測っていること。**
+
+    座面を 0.5 mm 伸ばしたら、実測の隙間もちょうど 0.5 mm 増えること。
+    """
+    a = result(TRAY, "underside", {"boss_h": 3.4})
+    b = result(TRAY, "underside", {"boss_h": 3.9})
+    ga = a.measurements["rescue_nut_0: 実測の隙間 [mm]"]
+    gb = b.measurements["rescue_nut_0: 実測の隙間 [mm]"]
+    assert gb - ga == pytest.approx(0.5, abs=0.05), (ga, gb)
+
+
+def test_underside_passes_on_the_designed_tray():
+    r = result(TRAY, "underside")
+    assert r.status == "PASS", r.summary
+    assert r.measurements["宣言した突起の数"] == 3
