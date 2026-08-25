@@ -270,3 +270,38 @@ def test_slide_axis_is_declared_and_either_horizontal_or_justified():
     assert m.SLIDE_FIT_CLEARANCE >= 2 * layer, (
         f"段差を横切る摺動なのに隙間 {m.SLIDE_FIT_CLEARANCE} mm が層厚 {layer} の"
         "2 倍に満たない（段差に引っかかる）")
+
+
+def test_lid_post_wall_survives_the_measured_insert_pilots():
+    """**柱の肉 = (boss - pilot) / 2 が min_wall を割らないこと**（D-024）.
+
+    2026-08-25 にヒートセットの実物が届き、下穴が 5.0 -> 5.4 / 6.2 -> 6.4 に太った。
+    **柱を太らせ忘れると肉が 1.6 を割る**（旧 8.2 のままなら (8.2-5.4)/2 = 1.40）。
+    `wall` チェックはレイキャストの実測なので必ず捕まえるが、**なぜ落ちたのかが
+    座標からは読めない。** ここでパラメータの関係として直接押さえておく。
+    """
+    u = unit()
+    p = u.PARAMS
+    limit = p["min_wall"]
+    for boss, pilot, name in ((p["lid_boss_dia"], p["lid_screw_dia"], "M4"),
+                              (p["lid_big_boss_dia"], p["lid_big_screw_dia"], "M5")):
+        wall = (boss - pilot) / 2
+        assert wall >= limit, (
+            f"{name} の柱の肉 {wall:.2f} mm が min_wall {limit} を割る "
+            f"(boss {boss} / pilot {pilot})。**柱を太らせること**")
+
+
+def test_lid_pilot_is_deeper_than_the_longest_insert():
+    """**下穴はインサートより深いこと**（D-024）.
+
+    同じ深さだと蝶ボルトの先端が下穴の底を突き、**締めたつもりで面圧が出ない。**
+    支配するのは長い方の **M5（実測 全長 10.0）** で、M4（8.0）ではない。
+    """
+    u = unit()
+    p = u.PARAMS
+    longest_insert = 10.0        # M5 ヒートセットの実測全長 2026-08-25
+    relief = 4.0                 # 設計が宣言している先端の逃げ（camera_unit の docstring）
+    assert p["lid_pilot_depth"] >= longest_insert + relief, (
+        f"下穴 {p['lid_pilot_depth']} mm が、いちばん長いインサート "
+        f"{longest_insert} mm + 逃げ {relief} に足りない。"
+        "**M4 の 8.0 ではなく M5 の 10.0 が支配することに注意**")
