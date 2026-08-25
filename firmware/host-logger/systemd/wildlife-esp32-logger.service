@@ -1,0 +1,12 @@
+[Unit]
+Description=wildlife-cam gamma: ESP32 serial logger (13-day unattended run)
+
+[Service]
+Type=simple
+ExecStartPre=/bin/sh -c 'stty -F /dev/wildlife-esp32 115200 raw -echo -hupcl || true'
+ExecStart=/usr/bin/python3 %h/bin/esp32_logger.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

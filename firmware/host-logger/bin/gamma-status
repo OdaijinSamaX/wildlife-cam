@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# wildlife-cam γ版 13日無人運転の健康チェック。1コマンドで全部見る。
+LOGDIR="$HOME/wildlife-gamma-logs"
+LOG=$(ls -t "$LOGDIR"/esp32-*.log 2>/dev/null | head -1)
+
+echo "=============================================="
+echo " wildlife-cam γ版 13日運転  $(date -Is)"
+echo "=============================================="
+
+if [ -z "$LOG" ]; then echo "★ ログが無い。logger が動いていない"; exit 1; fi
+
+age=$(( $(date +%s) - $(stat -c %Y "$LOG") ))
+printf "ログ鮮度   : %s 秒前に更新  (%s)\n" "$age" "$(basename "$LOG")"
+[ "$age" -gt 120 ] && echo "★ 2分以上更新が無い。ESP32 か logger が止まっている疑い"
+
+echo "--- サービス ---"
+printf "  logger(母艦) : %s\n" "$(systemctl --user is-active wildlife-esp32-logger.service)"
+printf "  advertiser(Pi): %s\n" "$(timeout 10 ssh -o BatchMode=yes wildlife-zero 'systemctl is-active wildlife-ble-advertiser.service' 2>/dev/null || echo '到達不可')"
+
+echo "--- 最新の状態 ---"
+grep -h 'beaconA' "$LOG" | tail -1 | sed 's/^/  /'
+grep -h 'beaconB' "$LOG" | tail -2 | sed 's/^/  /'
+
+echo "--- 累積（★が付いたら要確認）---"
+last_a=$(grep -h 'beaconA' "$LOG" | tail -1)
+for k in bad_mac seq_regress orphan sense_open; do
+  v=$(echo "$last_a" | grep -o "$k=[0-9]*" | cut -d= -f2)
+  if [ "${v:-0}" -gt 0 ]; then echo "  ★ $k = $v"; else echo "    $k = ${v:-?}"; fi
+done
+last_b=$(grep -h 'lamp_hot' "$LOG" | tail -1)
+for k in tcap_hit duty_limit; do
+  v=$(echo "$last_b" | grep -o "$k=[0-9]*" | cut -d= -f2)
+  echo "    $k = ${v:-?}"
+done
+echo "    tau : $(echo "$last_b" | grep -o 'tau{[^}]*}')"
+
+echo "--- 再起動の回数（増えていたら電源が不安定）---"
+echo "    $(grep -h 'boot_count' "$LOG" | tail -1 | grep -o 'boot_count=[0-9]*')"
+
+echo "--- τ 判定の内訳 ---"
+printf "    ok=%s  ng=%s  unknown=%s\n" \
+  "$(grep -hc '判定=ok' "$LOG")" "$(grep -hc '判定=ng' "$LOG")" "$(grep -hc '判定=unknown' "$LOG")"
+
+echo "--- 容量 ---"
+printf "    %s  (残り %s)\n" "$(du -sh "$LOGDIR" | cut -f1)" "$(df -h "$LOGDIR" | tail -1 | awk '{print $4}')"
