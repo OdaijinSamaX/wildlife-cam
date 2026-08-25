@@ -87,7 +87,7 @@ DESIGN_NAME = "camera_unit_lid"
 FIT_TABLE = fit.ASA_P1S
 
 PARAMS = {
-    "width": camera_unit.PARAMS["width"],       # 84.0
+    "width": camera_unit.PARAMS["width"],       # 88.0（D-022）
     "height": camera_unit.PARAMS["height"],     # 190.0
     "plate_t": 3.0,
     "saddle_t": 19.0,            # 鞍の肉厚。V の深さ 16 + ベルト溝の 3
@@ -103,8 +103,11 @@ PARAMS = {
     # パッキン溝（本体の land 中央に合わせる）
     "gasket_w": oring.GROOVE_WIDTH,   # 2.70
     "gasket_d": oring.GROOVE_DEPTH,   # 1.50
-    # 本体の land は x 37..42。溝はその中に収め、蓋の外縁にも 1.6 以上残す。
-    "gasket_x": 39.0,
+    # **本体の側壁の内面に合わせる（二重に持たない）。** 幅 88 化（D-022）で
+    # land は x 39.25..44 になった。溝 (中心 ±41.0 / 幅 2.70 -> 39.65..42.35) は
+    # その中に収まり、蓋の外縁にも 44 - 42.35 = 1.65 mm 残る（min_wall 1.6）。
+    # 内側に残る land は 39.65 - 39.25 = 0.40 mm。
+    "gasket_x": camera_unit.PARAMS["width"] / 2 - camera_unit.PARAMS["wall"],
     "gasket_z_margin": 3.0,      # 上下も同じ理由
     # 蝶ねじ
     "screw_dia": 4.5,
@@ -156,6 +159,10 @@ PARAMS = {
     #: 側面なら現地で**横から**読めるうえ、ベルト帯 (z 149.3〜179.3) さえ避ければよい。
     "label_face_y": 11.0,   # 側面の高さ 22 の中央
 }
+
+#: **`UNDER_BOARD` を宣言しない理由**（`docs/AGENTS.md` §6。考え忘れではない）。
+#: 蓋は基板を受けない。載っているのは蝶ねじとパッキンだけである。
+UNDER_BOARD: list = []
 
 #: シール面を下にして刷る。第 1 層 = 最も平坦な面がパッキンに当たる。
 PRINT_ORIENTATION = {"rotate": (90, 0, 0)}
