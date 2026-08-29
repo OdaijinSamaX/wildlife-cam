@@ -167,6 +167,7 @@ uv run pytest -q
 |---|---|
 | `designs/wildlife_cam/fit_coupon.py` | 公差校正クーポン v1。**2026-08-22 に印刷して実測済み**の実物の記録（凍結） |
 | `designs/wildlife_cam/fit_coupon_v2.py` | 同 v2。補正テーブルを通し、基準ピンを折り取り式の独立部品にした。実測値と導出は [fit_coupon.md](designs/wildlife_cam/fit_coupon.md) |
+| `designs/wildlife_cam/insert_coupon.py` | **ヒートセット下穴クーポン。** M4/M5 の下穴（5.2/5.4/5.6・6.2/6.4/6.6）を圧入で確かめる小片。座の肉と下穴の深さは `camera_unit` の柱と同じ。**本体（10〜14 時間）より先に 50 分で刷る** |
 | `designs/wildlife_cam/pir_bezel.py` | HC-SR501 を筐体壁に防水で貫通させる接着封止キャリア |
 | `designs/wildlife_cam/layout_study_{a,b,c,d}.py` | 内部レイアウトの比較検討 4 案。結論は [layout-study.md](docs/layout-study.md) |
 | `designs/wildlife_cam/camera_unit.py` | **カメラユニット本体（実設計）**。案D を起こしたもの |
